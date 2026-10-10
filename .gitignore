@@ -1,0 +1,44 @@
+# Rust
+/engine/target/
+**/target/
+
+# Clojure
+.cpcache/
+.nrepl-port
+.lsp/.cache/
+.clj-kondo/.cache/
+.calva/
+.cider-repl-history
+.rebel_readline_history
+
+# ClojureScript / web (later)
+node_modules/
+out/
+.shadow-cljs/
+
+# Vim
+*.swp
+*.swo
+*.swn
+*~
+.netrwhist
+Session.vim
+tags
+
+# Emacs
+\#*\#
+.\#*
+*.elc
+auto-save-list/
+.dir-locals-2.el
+TAGS
+.projectile
+flycheck_*
+
+# macOS
+.DS_Store
+
+# Audio renders and scratch audio. Project sample assets get an explicit
+# allow-list once they exist; jj snapshots every file, so keep big binaries out.
+/renders/
+*.tmp.wav
