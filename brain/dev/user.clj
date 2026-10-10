@@ -112,3 +112,13 @@
 (defn undo! [] (studio/undo!) :ok)
 
 (defn redo! [] (studio/redo!) :ok)
+
+(def my-song
+  {:song/bpm 110
+   :song/time-sig [4 4]
+   :channels {:kick {:gen [:builtin {:voice :kick}]}
+              :pop  {:gen [:sampler {:sample "/System/Library/Sounds/Pop.aiff"}]}}
+   :patterns {:beat {:steps {:kick (steps "x..x..x...x.....")
+                             :pop  (steps "....x.......x...")}}}
+   :playlist []
+   :mixer {}})
