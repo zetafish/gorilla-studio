@@ -42,6 +42,16 @@ pub enum Patch {
         row: String,
         steps: [Step; PATTERN_STEPS],
     },
+    /// Play `steps` on one row from the start of `bar` (counted from the last
+    /// start of playback). Live patterns send these a bar or two ahead. Like
+    /// transport, they aren't song data and don't advance the epoch.
+    #[serde(rename = "pattern/schedule-bar")]
+    ScheduleBar {
+        pattern: String,
+        row: String,
+        bar: u64,
+        steps: [Step; PATTERN_STEPS],
+    },
     /// Start or stop playback. Transport is engine state, not song data: it
     /// isn't saved or undone, and it doesn't advance the epoch.
     #[serde(rename = "transport/set")]
@@ -174,6 +184,13 @@ pub fn malli_schema() -> String {
      [:op [:= :pattern/set-steps]]
      [:pattern :keyword]
      [:row :keyword]
+     [:steps [:vector {{:min {PATTERN_STEPS} :max {PATTERN_STEPS}}} [:enum 0 1]]]]]
+   [:pattern/schedule-bar
+    [:map {{:closed true}}
+     [:op [:= :pattern/schedule-bar]]
+     [:pattern :keyword]
+     [:row :keyword]
+     [:bar [:int {{:min 0}}]]
      [:steps [:vector {{:min {PATTERN_STEPS} :max {PATTERN_STEPS}}} [:enum 0 1]]]]]
    [:transport/set
     [:map {{:closed true}}

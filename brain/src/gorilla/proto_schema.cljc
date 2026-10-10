@@ -14,6 +14,13 @@
      [:pattern :keyword]
      [:row :keyword]
      [:steps [:vector {:min 16 :max 16} [:enum 0 1]]]]]
+   [:pattern/schedule-bar
+    [:map {:closed true}
+     [:op [:= :pattern/schedule-bar]]
+     [:pattern :keyword]
+     [:row :keyword]
+     [:bar [:int {:min 0}]]
+     [:steps [:vector {:min 16 :max 16} [:enum 0 1]]]]]
    [:transport/set
     [:map {:closed true}
      [:op [:= :transport/set]]

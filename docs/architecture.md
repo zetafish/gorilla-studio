@@ -127,7 +127,7 @@ At 128 samples and 48 kHz, each buffer must be ready in 2.67 ms. Missing one dea
 
 - **Graph swaps:** the audio thread always runs one immutable graph; a new one appears between buffers.
 - **Parameter changes** (volume, cutoff) skip graph rebuilds: per-parameter lock-free queues, smoothed to avoid zipper noise.
-- **Pattern data** (step toggles, notes) also skips graph rebuilds. The control thread turns patches into fixed-size `Copy` messages on an `rtrb` queue, and the audio thread drains it at the start of each buffer.
+- **Pattern data** (step toggles, notes) also skips graph rebuilds. The control thread turns patches into fixed-size `Copy` messages on an `rtrb` queue, and the audio thread drains it at the start of each buffer. Live patterns use `:pattern/schedule-bar`: each row has a fixed queue of upcoming bars (`QUEUED_BARS`), and a queued bar replaces the row exactly at its bar line. The row keeps it afterwards, so without a brain the last bar loops.
 - **Parallelism:** independent tracks render on a fixed, real-time-safe worker pool, ordered by dependencies.
 - **Plugin hosting** is the only place that needs `unsafe`, isolated in `engine/host`.
 

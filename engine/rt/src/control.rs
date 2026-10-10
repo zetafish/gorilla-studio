@@ -17,7 +17,7 @@ use std::time::Duration;
 use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError, Telemetry};
 use rtrb::Producer;
 
-use crate::seq::{Playhead, Row, RtMsg, Steps};
+use crate::seq::{Playhead, Row, RtMsg};
 
 /// The one pattern the engine knows until it plays real songs.
 const DRUMS: &str = "drums";
@@ -171,20 +171,33 @@ fn translate(patch: &Patch) -> Result<RtMsg, String> {
             pattern,
             row,
             steps,
-        } => {
-            if pattern != DRUMS {
-                return Err(format!("unknown pattern {pattern:?}"));
-            }
-            let row = match row.as_str() {
-                "kick" => Row::Kick,
-                "snare" => Row::Snare,
-                "hat" => Row::Hat,
-                other => return Err(format!("unknown row {other:?}")),
-            };
-            let steps: Steps = steps.map(|s| s.0);
-            Ok(RtMsg::SetSteps { row, steps })
-        }
+        } => Ok(RtMsg::SetSteps {
+            row: drum_row(pattern, row)?,
+            steps: steps.map(|s| s.0),
+        }),
+        Patch::ScheduleBar {
+            pattern,
+            row,
+            bar,
+            steps,
+        } => Ok(RtMsg::ScheduleBar {
+            row: drum_row(pattern, row)?,
+            bar: *bar,
+            steps: steps.map(|s| s.0),
+        }),
         Patch::SetTransport { playing } => Ok(RtMsg::Transport { playing: *playing }),
+    }
+}
+
+fn drum_row(pattern: &str, row: &str) -> Result<Row, String> {
+    if pattern != DRUMS {
+        return Err(format!("unknown pattern {pattern:?}"));
+    }
+    match row {
+        "kick" => Ok(Row::Kick),
+        "snare" => Ok(Row::Snare),
+        "hat" => Ok(Row::Hat),
+        other => Err(format!("unknown row {other:?}")),
     }
 }
 
@@ -338,6 +351,31 @@ mod tests {
             )
         });
         assert!(acked, "playhead reports the applied epoch");
+    }
+
+    #[test]
+    fn schedule_bar_reaches_the_audio_thread() {
+        let (mut tx, mut rx) = RingBuffer::new(4);
+        let envelope = Envelope {
+            epoch: 2,
+            ops: vec![Patch::ScheduleBar {
+                pattern: "drums".into(),
+                row: "kick".into(),
+                bar: 12,
+                steps: [Step(false); PATTERN_STEPS],
+            }],
+        };
+        let bytes = frame(&envelope);
+        let payload = bytes.get(HEADER_BYTES..).unwrap_or_default();
+        assert_eq!(apply(payload, &mut tx), Ok(envelope));
+        assert_eq!(
+            rx.pop(),
+            Ok(RtMsg::ScheduleBar {
+                row: Row::Kick,
+                bar: 12,
+                steps: [false; PATTERN_STEPS]
+            })
+        );
     }
 
     #[test]

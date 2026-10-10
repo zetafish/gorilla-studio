@@ -35,6 +35,69 @@ pub enum RtMsg {
     Transport {
         playing: bool,
     },
+    /// Play `steps` on `row` from the start of `bar` (counted from the last
+    /// start). The row keeps them afterwards, so if nothing else is queued the
+    /// last bar keeps looping.
+    ScheduleBar {
+        row: Row,
+        bar: u64,
+        steps: Steps,
+    },
+}
+
+/// Upcoming bars a row can hold. More than the brain's lookahead needs.
+pub const QUEUED_BARS: usize = 4;
+
+/// Fixed-size queue of upcoming bars for one row.
+#[derive(Clone, Copy, Default)]
+struct BarQueue([Option<(u64, Steps)>; QUEUED_BARS]);
+
+impl BarQueue {
+    /// Queues `steps` for `bar`, replacing any entry for the same bar and
+    /// dropping entries before `earliest`. When full, the furthest bar gives
+    /// way to a nearer one.
+    fn insert(&mut self, bar: u64, steps: Steps, earliest: u64) {
+        if bar < earliest {
+            return;
+        }
+        for slot in &mut self.0 {
+            if slot.is_some_and(|(b, _)| b < earliest) {
+                *slot = None;
+            }
+        }
+        if let Some(slot) = self.0.iter_mut().find(|s| s.is_some_and(|(b, _)| b == bar)) {
+            *slot = Some((bar, steps));
+        } else if let Some(slot) = self.0.iter_mut().find(|s| s.is_none()) {
+            *slot = Some((bar, steps));
+        } else if let Some(slot) = self
+            .0
+            .iter_mut()
+            .max_by_key(|s| s.map_or(0, |(b, _)| b))
+            .filter(|s| s.is_some_and(|(b, _)| b > bar))
+        {
+            *slot = Some((bar, steps));
+        }
+    }
+
+    /// Removes and returns the steps for `bar`, dropping anything older.
+    fn take(&mut self, bar: u64) -> Option<Steps> {
+        let mut found = None;
+        for slot in &mut self.0 {
+            match *slot {
+                Some((b, steps)) if b == bar => {
+                    found = Some(steps);
+                    *slot = None;
+                }
+                Some((b, _)) if b < bar => *slot = None,
+                _ => {}
+            }
+        }
+        found
+    }
+
+    fn clear(&mut self) {
+        self.0 = [None; QUEUED_BARS];
+    }
 }
 
 const X: bool = true;
@@ -84,6 +147,7 @@ impl Playhead {
 
 pub struct Sequencer {
     pattern: [Steps; ROW_COUNT],
+    queued: [BarQueue; ROW_COUNT],
     voices: [Voice; ROW_COUNT],
     samples_per_step: f64,
     samples_until_step: f64,
@@ -100,6 +164,7 @@ impl Sequencer {
         let bpm = bpm.clamp(20.0, 999.0);
         Self {
             pattern: DEFAULT_PATTERN,
+            queued: [BarQueue::default(); ROW_COUNT],
             voices: Row::ALL.map(|row| Voice::new(row, sample_rate)),
             // Sixteenth notes: four steps per beat.
             samples_per_step: f64::from(sample_rate) * 60.0 / f64::from(bpm) / 4.0,
@@ -116,7 +181,22 @@ impl Sequencer {
         match msg {
             RtMsg::SetSteps { row, steps } => self.set_steps(row, steps),
             RtMsg::Transport { playing } => self.set_playing(playing),
+            RtMsg::ScheduleBar { row, bar, steps } => {
+                // The first bar that hasn't started yet.
+                let earliest = self.steps_played.div_ceil(STEPS as u64);
+                if let Some(queue) = self.queue_mut(row) {
+                    queue.insert(bar, steps, earliest);
+                }
+            }
         }
+    }
+
+    fn queue_mut(&mut self, row: Row) -> Option<&mut BarQueue> {
+        Row::ALL
+            .iter()
+            .zip(self.queued.iter_mut())
+            .find(|(r, _)| **r == row)
+            .map(|(_, q)| q)
     }
 
     fn set_playing(&mut self, playing: bool) {
@@ -125,6 +205,10 @@ impl Sequencer {
             self.samples_until_step = 0.0;
             self.steps_played = 0;
             self.playhead.steps.store(0, Ordering::Relaxed);
+            // Bar numbers start over, so queued bars no longer mean anything.
+            for queue in &mut self.queued {
+                queue.clear();
+            }
         }
         self.playing = playing;
         self.playhead.playing.store(playing, Ordering::Relaxed);
@@ -160,6 +244,14 @@ impl Sequencer {
 
     fn trigger_step(&mut self) {
         let step = self.step;
+        if step == 0 {
+            let bar = self.steps_played / STEPS as u64;
+            for (row, queue) in self.pattern.iter_mut().zip(self.queued.iter_mut()) {
+                if let Some(steps) = queue.take(bar) {
+                    *row = steps;
+                }
+            }
+        }
         for (row, voice) in self.pattern.iter().zip(self.voices.iter_mut()) {
             if row.get(step).copied().unwrap_or(false) {
                 voice.trigger();
@@ -378,6 +470,82 @@ mod tests {
         assert!(playhead.playing());
         assert_eq!(playhead.position(), (0, 0));
     }
+
+    const BAR: usize = 16 * 6_000;
+    const NONE: Steps = [false; STEPS];
+    const ALL: Steps = [true; STEPS];
+
+    fn hats(seq: &Sequencer) -> Steps {
+        seq.pattern.get(2).copied().unwrap_or_default()
+    }
+
+    #[test]
+    fn scheduled_bars_start_on_the_bar_line_and_then_loop() {
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
+        seq.apply(RtMsg::ScheduleBar {
+            row: Row::Hat,
+            bar: 1,
+            steps: ALL,
+        });
+        seq.apply(RtMsg::ScheduleBar {
+            row: Row::Hat,
+            bar: 2,
+            steps: NONE,
+        });
+        render(&mut seq, BAR);
+        assert_eq!(hats(&seq), HAT_DEFAULT, "bar 0 plays the row as it was");
+        render(&mut seq, 1);
+        assert_eq!(hats(&seq), ALL, "bar 1 switches on its first sample");
+        render(&mut seq, BAR);
+        assert_eq!(hats(&seq), NONE);
+        render(&mut seq, 3 * BAR);
+        assert_eq!(hats(&seq), NONE, "with nothing queued, the last bar loops");
+    }
+
+    #[test]
+    fn rescheduling_a_bar_replaces_it_and_late_bars_are_ignored() {
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
+        render(&mut seq, BAR + 1); // bar 1 has started
+        for (bar, steps) in [(1, ALL), (2, ALL), (2, NONE)] {
+            seq.apply(RtMsg::ScheduleBar {
+                row: Row::Hat,
+                bar,
+                steps,
+            });
+        }
+        assert_eq!(hats(&seq), HAT_DEFAULT);
+        render(&mut seq, BAR);
+        assert_eq!(hats(&seq), NONE);
+    }
+
+    #[test]
+    fn a_full_queue_keeps_the_nearest_bars() {
+        let mut queue = BarQueue::default();
+        for bar in [10, 9, 8, 7, 6, 5] {
+            queue.insert(bar, ALL, 0);
+        }
+        let mut bars: Vec<u64> = queue.0.iter().flatten().map(|(b, _)| *b).collect();
+        bars.sort_unstable();
+        assert_eq!(bars, [5, 6, 7, 8]);
+        assert_eq!(queue.take(7), Some(ALL));
+        assert_eq!(queue.0.iter().flatten().count(), 1, "5 and 6 were stale");
+    }
+
+    #[test]
+    fn play_clears_the_queue() {
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
+        seq.apply(RtMsg::ScheduleBar {
+            row: Row::Hat,
+            bar: 1,
+            steps: ALL,
+        });
+        seq.apply(RtMsg::Transport { playing: false });
+        seq.apply(RtMsg::Transport { playing: true });
+        render(&mut seq, 2 * BAR);
+        assert_eq!(hats(&seq), HAT_DEFAULT);
+    }
+
+    const HAT_DEFAULT: Steps = [X, O, X, O, X, O, X, O, X, O, X, O, X, O, X, O];
 
     #[test]
     fn odd_inputs_do_not_break_the_clock() {
