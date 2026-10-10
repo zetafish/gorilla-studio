@@ -4,12 +4,27 @@
 //! A row plays the channel with the same id, as in a channel rack: row
 //! `"kick"` of every pattern triggers channel `"kick"`.
 
+use std::path::PathBuf;
+
 use crate::graph::{BarQueue, Channel, Graph, Pattern, Row, STEPS, Steps};
+use crate::samples::SampleCache;
 use crate::voice::{Builtin, Generator, Voice};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenSpec {
     Builtin(Builtin),
+    Sampler(PathBuf),
+}
+
+impl GenSpec {
+    pub fn from_wire(generator: &gorilla_proto::Gen) -> Result<Self, String> {
+        match generator {
+            gorilla_proto::Gen::Builtin { voice } => Builtin::from_name(voice)
+                .map(GenSpec::Builtin)
+                .ok_or_else(|| format!("unknown builtin voice {voice:?}")),
+            gorilla_proto::Gen::Sampler { sample } => Ok(GenSpec::Sampler(sample.into())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,19 +133,77 @@ impl Model {
         }
     }
 
+    /// Creates or changes a channel. Returns true when that changed anything.
+    pub fn set_channel(&mut self, id: &str, generator: GenSpec) -> bool {
+        match self.channels.iter_mut().find(|c| c.id == id) {
+            Some(existing) if existing.generator == generator => false,
+            Some(existing) => {
+                existing.generator = generator;
+                true
+            }
+            None => {
+                self.channels.push(ChannelSpec {
+                    id: id.into(),
+                    generator,
+                });
+                true
+            }
+        }
+    }
+
+    /// Removes a channel and every row that plays it.
+    pub fn remove_channel(&mut self, id: &str) -> bool {
+        let before = self.channels.len();
+        self.channels.retain(|c| c.id != id);
+        let mut changed = self.channels.len() != before;
+        for pattern in &mut self.patterns {
+            let rows = pattern.rows.len();
+            pattern.rows.retain(|r| r.id != id);
+            changed |= pattern.rows.len() != rows;
+        }
+        changed
+    }
+
+    pub fn remove_row(&mut self, pattern: &str, row: &str) -> bool {
+        self.patterns
+            .iter_mut()
+            .find(|p| p.id == pattern)
+            .is_some_and(|p| {
+                let before = p.rows.len();
+                p.rows.retain(|r| r.id != row);
+                p.rows.len() != before
+            })
+    }
+
+    pub fn remove_pattern(&mut self, pattern: &str) -> bool {
+        let before = self.patterns.len();
+        self.patterns.retain(|p| p.id != pattern);
+        self.patterns.len() != before
+    }
+
     /// Builds a graph for this model. `prev` is the model the current graph
     /// was built from; channels and rows found in both carry their state.
-    pub fn build(&self, prev: &Model, sample_rate: f32) -> Result<Graph, String> {
+    pub fn build(
+        &self,
+        prev: &Model,
+        sample_rate: f32,
+        samples: &mut SampleCache,
+    ) -> Result<Graph, String> {
         let channels = self
             .channels
             .iter()
-            .map(|spec| Channel {
-                generator: match &spec.generator {
-                    GenSpec::Builtin(kind) => Generator::builtin(*kind, sample_rate),
-                },
-                voice: Voice::default(),
+            .map(|spec| {
+                Ok(Channel {
+                    generator: match &spec.generator {
+                        GenSpec::Builtin(kind) => Generator::builtin(*kind, sample_rate),
+                        GenSpec::Sampler(path) => {
+                            Generator::sampler(samples.get(path)?, sample_rate)
+                        }
+                    },
+                    voice: Voice::default(),
+                })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         let channel_carry = self
             .channels
             .iter()
@@ -185,15 +258,43 @@ mod tests {
     #[test]
     fn default_drums_build() {
         let model = Model::default_drums();
-        let graph = model.build(&Model::default(), 48_000.0);
+        let graph = model.build(&Model::default(), 48_000.0, &mut SampleCache::default());
         assert!(graph.is_ok_and(|g| g.channels.len() == 3 && g.patterns.len() == 1));
+    }
+
+    #[test]
+    fn removing_a_channel_removes_its_rows() {
+        let mut model = Model::default_drums();
+        assert!(model.remove_channel("hat"));
+        assert_eq!(model.row_index("drums", "hat"), None);
+        assert!(!model.remove_channel("hat"));
+        assert!(
+            model
+                .build(&Model::default(), 48_000.0, &mut SampleCache::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_missing_sample_fails_the_build() {
+        let mut model = Model::default_drums();
+        model.set_channel("clap", GenSpec::Sampler("/no/such/clap.wav".into()));
+        assert!(
+            model
+                .build(&Model::default(), 48_000.0, &mut SampleCache::default())
+                .is_err()
+        );
     }
 
     #[test]
     fn rows_need_a_channel() {
         let mut model = Model::default_drums();
         assert!(model.set_steps("drums", "cowbell", [true; STEPS]));
-        assert!(model.build(&Model::default(), 48_000.0).is_err());
+        assert!(
+            model
+                .build(&Model::default(), 48_000.0, &mut SampleCache::default())
+                .is_err()
+        );
     }
 
     #[test]
@@ -202,7 +303,7 @@ mod tests {
         let mut next = prev.clone();
         next.channels.reverse();
         next.set_steps("fills", "hat", [true; STEPS]);
-        let graph = next.build(&prev, 48_000.0);
+        let graph = next.build(&prev, 48_000.0, &mut SampleCache::default());
         assert!(graph.is_ok());
         let Ok(graph) = graph else { return };
         assert_eq!(graph.channel_carry, [Some(2), Some(1), Some(0)]);

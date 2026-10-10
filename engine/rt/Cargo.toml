@@ -15,6 +15,7 @@ assert_no_alloc = "1.1"
 cpal = "0.18"
 gorilla-proto = { path = "../proto" }
 rtrb = "0.4"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "pcm", "flac"] }
 
 [lints]
 workspace = true

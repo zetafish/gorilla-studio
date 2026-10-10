@@ -34,6 +34,8 @@ pub enum RtMsg {
     },
     /// Start (from step 0) or stop the clock. Starting while playing does nothing.
     Transport { playing: bool },
+    /// Change tempo, keeping the position within the current step.
+    SetTempo { bpm: f32 },
 }
 
 /// What the audio thread is playing, for telemetry. Only the audio thread
@@ -90,12 +92,10 @@ impl Sequencer {
         reclaim: Producer<Box<Graph>>,
     ) -> Self {
         let sample_rate = sample_rate.max(1.0);
-        let bpm = bpm.clamp(20.0, 999.0);
         Self {
             graph,
             reclaim,
-            // Sixteenth notes: four steps per beat.
-            samples_per_step: f64::from(sample_rate) * 60.0 / f64::from(bpm) / 4.0,
+            samples_per_step: samples_per_step(sample_rate, bpm),
             samples_until_step: 0.0,
             step: 0,
             steps_played: 0,
@@ -142,6 +142,12 @@ impl Sequencer {
                 }
             }
             RtMsg::Transport { playing } => self.set_playing(playing),
+            RtMsg::SetTempo { bpm } => {
+                let new = samples_per_step(self.ctx.sample_rate, bpm);
+                // Same fraction of the step left, so the groove doesn't jump.
+                self.samples_until_step *= new / self.samples_per_step;
+                self.samples_per_step = new;
+            }
         }
     }
 
@@ -183,12 +189,23 @@ impl Sequencer {
     }
 }
 
+/// Sixteenth notes: four steps per beat.
+fn samples_per_step(sample_rate: f32, bpm: f32) -> f64 {
+    let bpm = if bpm.is_finite() {
+        bpm.clamp(20.0, 999.0)
+    } else {
+        120.0
+    };
+    f64::from(sample_rate) * 60.0 / f64::from(bpm) / 4.0
+}
+
 #[cfg(test)]
 mod tests {
     use rtrb::{Consumer, RingBuffer};
 
     use super::*;
     use crate::model::{DEFAULT_HAT, Model};
+    use crate::samples::SampleCache;
 
     const SR: f32 = 48_000.0;
     const BAR: usize = 16 * 6_000;
@@ -199,7 +216,7 @@ mod tests {
     fn drums() -> Box<Graph> {
         Box::new(
             Model::default_drums()
-                .build(&Model::default(), SR)
+                .build(&Model::default(), SR, &mut SampleCache::default())
                 .unwrap_or_default(),
         )
     }
@@ -380,7 +397,10 @@ mod tests {
         let before = seq.graph.channels.first().map(|c| c.voice);
 
         let prev = Model::default_drums();
-        let rebuilt = Box::new(prev.build(&prev, SR).unwrap_or_default());
+        let rebuilt = Box::new(
+            prev.build(&prev, SR, &mut SampleCache::default())
+                .unwrap_or_default(),
+        );
         assert_no_alloc::assert_no_alloc(|| seq.apply(RtMsg::SwapGraph(rebuilt)));
 
         assert_eq!(
@@ -399,8 +419,30 @@ mod tests {
     }
 
     #[test]
+    fn tempo_changes_keep_the_position_in_the_step() {
+        let mut seq = sequencer();
+        render(&mut seq, 3_000); // halfway through step 0 at 120 BPM
+        seq.apply(RtMsg::SetTempo { bpm: 60.0 });
+        assert_eq!(seq.samples_per_step, 12_000.0);
+        assert_eq!(seq.samples_until_step, 6_000.0, "still halfway");
+        render(&mut seq, 6_000);
+        assert_eq!(seq.step, 1);
+        render(&mut seq, 1);
+        assert_eq!(
+            seq.step, 2,
+            "step 1 fired exactly one 60 BPM half-step later"
+        );
+    }
+
+    #[test]
     fn odd_inputs_do_not_break_the_clock() {
-        for (sr, bpm) in [(0.0, 120.0), (SR, 0.0), (SR, f32::MAX), (1.0, 1.0)] {
+        for (sr, bpm) in [
+            (0.0, 120.0),
+            (SR, 0.0),
+            (SR, f32::MAX),
+            (1.0, 1.0),
+            (SR, f32::NAN),
+        ] {
             let (reclaim, _old) = RingBuffer::new(1);
             let mut seq = Sequencer::new(sr, bpm, Arc::default(), drums(), reclaim);
             assert!(render(&mut seq, 1_000).iter().all(|s| s.is_finite()));

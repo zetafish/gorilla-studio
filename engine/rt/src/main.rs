@@ -3,6 +3,7 @@
 mod control;
 mod graph;
 mod model;
+mod samples;
 mod seq;
 mod voice;
 
@@ -68,7 +69,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let sample_rate = config.sample_rate as f32;
     let model = Model::default_drums();
-    let graph = model.build(&Model::default(), sample_rate)?;
+    let graph = model.build(&Model::default(), sample_rate, &mut Default::default())?;
     let (reclaim, old_graphs) = RingBuffer::new(RECLAIM_QUEUE);
     spawn_reclaim(old_graphs)?;
 

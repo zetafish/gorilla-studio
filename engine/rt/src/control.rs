@@ -18,7 +18,8 @@ use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError, Telemetry};
 use rtrb::Producer;
 
 use crate::graph::Steps;
-use crate::model::{Model, steps_from};
+use crate::model::{GenSpec, Model, steps_from};
+use crate::samples::SampleCache;
 use crate::seq::{Playhead, RtMsg};
 
 /// About 60 Hz.
@@ -143,6 +144,7 @@ fn read_patches(mut stream: &TcpStream, control: &mut Control, status: &Status) 
 pub struct Control {
     model: Model,
     sample_rate: f32,
+    samples: SampleCache,
     tx: Producer<RtMsg>,
 }
 
@@ -151,6 +153,7 @@ enum Pending<'a> {
     Steps(&'a str, &'a str, Steps),
     Bar(&'a str, &'a str, u64, Steps),
     Transport(bool),
+    Tempo(f32),
 }
 
 impl Control {
@@ -159,6 +162,7 @@ impl Control {
         Self {
             model,
             sample_rate,
+            samples: SampleCache::default(),
             tx,
         }
     }
@@ -186,7 +190,7 @@ impl Control {
     /// The model after `ops`, and the messages that take the audio thread
     /// there. Changes to the model's shape become one new graph, swapped in
     /// before the other messages; nothing is committed here.
-    fn plan(&self, ops: &[Patch]) -> Result<(Model, Vec<RtMsg>), String> {
+    fn plan(&mut self, ops: &[Patch]) -> Result<(Model, Vec<RtMsg>), String> {
         let mut next = self.model.clone();
         let mut reshaped = false;
         let mut pending = Vec::with_capacity(ops.len());
@@ -211,12 +215,28 @@ impl Control {
                     steps,
                 } => pending.push(Pending::Bar(pattern, row, *bar, steps_from(steps))),
                 Patch::SetTransport { playing } => pending.push(Pending::Transport(*playing)),
+                Patch::RemoveRow { pattern, row } => reshaped |= next.remove_row(pattern, row),
+                Patch::RemovePattern { pattern } => reshaped |= next.remove_pattern(pattern),
+                Patch::SetChannel { channel, generator } => {
+                    reshaped |= next.set_channel(channel, GenSpec::from_wire(generator)?);
+                }
+                Patch::RemoveChannel { channel } => reshaped |= next.remove_channel(channel),
+                Patch::SetBpm { bpm } => {
+                    if !(gorilla_proto::MIN_BPM..=gorilla_proto::MAX_BPM).contains(bpm) {
+                        return Err(format!("bpm {bpm} out of range"));
+                    }
+                    pending.push(Pending::Tempo(*bpm as f32));
+                }
+                Patch::Reset => {
+                    next = Model::default();
+                    reshaped = true;
+                }
             }
         }
 
         let mut msgs = Vec::with_capacity(pending.len() + 1);
         if reshaped {
-            let graph = next.build(&self.model, self.sample_rate)?;
+            let graph = next.build(&self.model, self.sample_rate, &mut self.samples)?;
             msgs.push(RtMsg::SwapGraph(Box::new(graph)));
         }
         let row_index = |pattern: &str, row: &str| {
@@ -243,6 +263,7 @@ impl Control {
                     }
                 }
                 Pending::Transport(playing) => RtMsg::Transport { playing },
+                Pending::Tempo(bpm) => RtMsg::SetTempo { bpm },
             });
         }
         Ok((next, msgs))
@@ -255,7 +276,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::{Duration, Instant};
 
-    use gorilla_proto::{PATTERN_STEPS, Step};
+    use gorilla_proto::{Gen, PATTERN_STEPS, Step};
     use rtrb::{Consumer, RingBuffer};
 
     use super::*;
@@ -469,6 +490,83 @@ mod tests {
             })
         ));
         assert!(rx.pop().is_err(), "the new row's steps came with the graph");
+    }
+
+    fn envelope(ops: Vec<Patch>) -> Envelope {
+        Envelope { epoch: 1, ops }
+    }
+
+    #[test]
+    fn a_snapshot_replaces_everything_and_keeps_shared_channels_ringing() {
+        let (mut control, mut rx) = control(8);
+        let clap = crate::samples::tests::write_wav("clap", 44_100, &[0, 8_000, -8_000]);
+        let snapshot = envelope(vec![
+            Patch::Reset,
+            Patch::SetChannel {
+                channel: "kick".into(),
+                generator: Gen::Builtin {
+                    voice: "kick".into(),
+                },
+            },
+            Patch::SetChannel {
+                channel: "clap".into(),
+                generator: Gen::Sampler {
+                    sample: clap.display().to_string(),
+                },
+            },
+            Patch::SetSteps {
+                pattern: "beat".into(),
+                row: "clap".into(),
+                steps: [Step(true); PATTERN_STEPS],
+            },
+            Patch::SetBpm { bpm: 90.0 },
+        ]);
+        assert!(apply(&mut control, &snapshot).is_ok());
+        let swap = rx.pop();
+        assert!(matches!(&swap, Ok(RtMsg::SwapGraph(_))));
+        if let Ok(RtMsg::SwapGraph(graph)) = swap {
+            assert_eq!(graph.channels.len(), 2);
+            assert_eq!(graph.channel_carry, [Some(0), None], "kick keeps ringing");
+            assert_eq!(graph.patterns.len(), 1);
+        }
+        assert_eq!(rx.pop(), Ok(RtMsg::SetTempo { bpm: 90.0 }));
+        assert_eq!(control.model.channel_index("snare"), None);
+    }
+
+    #[test]
+    fn bad_channels_and_tempos_are_rejected() {
+        let (mut control, mut rx) = control(8);
+        for op in [
+            Patch::SetChannel {
+                channel: "x".into(),
+                generator: Gen::Builtin {
+                    voice: "cowbell".into(),
+                },
+            },
+            Patch::SetChannel {
+                channel: "x".into(),
+                generator: Gen::Sampler {
+                    sample: "/no/such/file.wav".into(),
+                },
+            },
+            Patch::SetBpm { bpm: 5.0 },
+            Patch::SetBpm { bpm: f64::NAN },
+        ] {
+            assert!(apply(&mut control, &envelope(vec![op])).is_err());
+        }
+        assert!(rx.pop().is_err());
+        assert_eq!(control.model, Model::default_drums());
+    }
+
+    #[test]
+    fn removing_a_channel_takes_its_rows_with_it() {
+        let (mut control, mut rx) = control(8);
+        let remove = envelope(vec![Patch::RemoveChannel {
+            channel: "hat".into(),
+        }]);
+        assert!(apply(&mut control, &remove).is_ok());
+        assert!(matches!(rx.pop(), Ok(RtMsg::SwapGraph(g)) if g.channels.len() == 2));
+        assert!(apply(&mut control, &set_steps("drums", "hat", 2)).is_err());
     }
 
     #[test]

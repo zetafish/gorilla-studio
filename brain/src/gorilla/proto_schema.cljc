@@ -6,6 +6,17 @@
 
 (def pattern-steps 16)
 
+(def Gen
+  [:multi {:dispatch :type}
+   [:builtin
+    [:map {:closed true}
+     [:type [:= :builtin]]
+     [:voice [:enum :kick :snare :hat]]]]
+   [:sampler
+    [:map {:closed true}
+     [:type [:= :sampler]]
+     [:sample :string]]]])
+
 (def Patch
   [:multi {:dispatch :op}
    [:pattern/set-steps
@@ -24,7 +35,32 @@
    [:transport/set
     [:map {:closed true}
      [:op [:= :transport/set]]
-     [:playing :boolean]]]])
+     [:playing :boolean]]]
+   [:pattern/remove-row
+    [:map {:closed true}
+     [:op [:= :pattern/remove-row]]
+     [:pattern :keyword]
+     [:row :keyword]]]
+   [:pattern/remove
+    [:map {:closed true}
+     [:op [:= :pattern/remove]]
+     [:pattern :keyword]]]
+   [:channel/set
+    [:map {:closed true}
+     [:op [:= :channel/set]]
+     [:channel :keyword]
+     [:generator Gen]]]
+   [:channel/remove
+    [:map {:closed true}
+     [:op [:= :channel/remove]]
+     [:channel :keyword]]]
+   [:song/set-bpm
+    [:map {:closed true}
+     [:op [:= :song/set-bpm]]
+     [:bpm [:double {:min 20.0 :max 999.0}]]]]
+   [:song/reset
+    [:map {:closed true}
+     [:op [:= :song/reset]]]]])
 
 (def Envelope
   [:map {:closed true}

@@ -22,8 +22,12 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// Bytes in the length prefix.
 pub const HEADER_BYTES: usize = 4;
 
+/// Tempo range the engine accepts, in beats per minute.
+pub const MIN_BPM: f64 = 20.0;
+pub const MAX_BPM: f64 = 999.0;
+
 /// A batch of patches the brain sends after one song change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
     /// Song version these patches lead to. Lets the engine report what it plays
@@ -32,7 +36,7 @@ pub struct Envelope {
     pub ops: Vec<Patch>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", deny_unknown_fields)]
 pub enum Patch {
     /// Replace one row of a step pattern.
@@ -56,6 +60,39 @@ pub enum Patch {
     /// isn't saved or undone, and it doesn't advance the epoch.
     #[serde(rename = "transport/set")]
     SetTransport { playing: bool },
+    /// Remove one row from a pattern. Removing a missing row does nothing.
+    #[serde(rename = "pattern/remove-row")]
+    RemoveRow { pattern: String, row: String },
+    /// Remove a pattern and its rows. Removing a missing pattern does nothing.
+    #[serde(rename = "pattern/remove")]
+    RemovePattern { pattern: String },
+    /// Create a channel or change what it plays. Rows with the same id in
+    /// every pattern trigger it.
+    #[serde(rename = "channel/set")]
+    SetChannel { channel: String, generator: Gen },
+    /// Remove a channel and every row that plays it.
+    #[serde(rename = "channel/remove")]
+    RemoveChannel { channel: String },
+    /// Tempo, kept on the bar grid: the position in the bar doesn't jump.
+    #[serde(rename = "song/set-bpm")]
+    SetBpm { bpm: f64 },
+    /// Forget every channel and pattern. A full snapshot starts with this, so
+    /// the engine ends up with exactly the brain's song. Channels and rows that
+    /// come back in the same envelope keep playing without a cut.
+    #[serde(rename = "song/reset")]
+    Reset,
+}
+
+/// What a channel plays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum Gen {
+    /// One of the engine's synthesized drums: "kick", "snare" or "hat".
+    #[serde(rename = "builtin")]
+    Builtin { voice: String },
+    /// A sound file (WAV, AIFF or FLAC), by absolute path.
+    #[serde(rename = "sampler")]
+    Sampler { sample: String },
 }
 
 /// Messages from the engine to the brain, framed like patches.
@@ -125,6 +162,67 @@ impl fmt::Display for ProtoError {
 
 impl std::error::Error for ProtoError {}
 
+/// One envelope per patch type, for tests on both sides of the boundary.
+/// `examples_frames` writes them to `brain/test/resources/proto-examples.bin`,
+/// and the brain checks each one against its malli schema.
+pub fn examples() -> Vec<Envelope> {
+    let steps = std::array::from_fn(|i| Step(i % 4 == 0));
+    let ops = vec![
+        Patch::SetSteps {
+            pattern: "drums".into(),
+            row: "kick".into(),
+            steps,
+        },
+        Patch::ScheduleBar {
+            pattern: "drums".into(),
+            row: "hat".into(),
+            bar: 12,
+            steps,
+        },
+        Patch::SetTransport { playing: false },
+        Patch::RemoveRow {
+            pattern: "drums".into(),
+            row: "hat".into(),
+        },
+        Patch::RemovePattern {
+            pattern: "fills".into(),
+        },
+        Patch::SetChannel {
+            channel: "kick".into(),
+            generator: Gen::Builtin {
+                voice: "kick".into(),
+            },
+        },
+        Patch::SetChannel {
+            channel: "clap".into(),
+            generator: Gen::Sampler {
+                sample: "/samples/clap.wav".into(),
+            },
+        },
+        Patch::RemoveChannel {
+            channel: "clap".into(),
+        },
+        Patch::SetBpm { bpm: 128.5 },
+        Patch::Reset,
+    ];
+    ops.into_iter()
+        .zip(1..)
+        .map(|(op, epoch)| Envelope {
+            epoch,
+            ops: vec![op],
+        })
+        .collect()
+}
+
+/// `examples()` as consecutive frames.
+pub fn examples_frames() -> Result<Vec<u8>, ProtoError> {
+    let mut out = Vec::new();
+    for envelope in examples() {
+        out.extend(encode_frame(&envelope)?);
+    }
+    Ok(out)
+}
+
 /// Payload length announced by a frame header.
 pub fn payload_len(header: [u8; HEADER_BYTES]) -> Result<usize, ProtoError> {
     let len = usize::try_from(u32::from_be_bytes(header)).unwrap_or(usize::MAX);
@@ -177,6 +275,17 @@ pub fn malli_schema() -> String {
 
 (def pattern-steps {PATTERN_STEPS})
 
+(def Gen
+  [:multi {{:dispatch :type}}
+   [:builtin
+    [:map {{:closed true}}
+     [:type [:= :builtin]]
+     [:voice [:enum :kick :snare :hat]]]]
+   [:sampler
+    [:map {{:closed true}}
+     [:type [:= :sampler]]
+     [:sample :string]]]])
+
 (def Patch
   [:multi {{:dispatch :op}}
    [:pattern/set-steps
@@ -195,7 +304,32 @@ pub fn malli_schema() -> String {
    [:transport/set
     [:map {{:closed true}}
      [:op [:= :transport/set]]
-     [:playing :boolean]]]])
+     [:playing :boolean]]]
+   [:pattern/remove-row
+    [:map {{:closed true}}
+     [:op [:= :pattern/remove-row]]
+     [:pattern :keyword]
+     [:row :keyword]]]
+   [:pattern/remove
+    [:map {{:closed true}}
+     [:op [:= :pattern/remove]]
+     [:pattern :keyword]]]
+   [:channel/set
+    [:map {{:closed true}}
+     [:op [:= :channel/set]]
+     [:channel :keyword]
+     [:generator Gen]]]
+   [:channel/remove
+    [:map {{:closed true}}
+     [:op [:= :channel/remove]]
+     [:channel :keyword]]]
+   [:song/set-bpm
+    [:map {{:closed true}}
+     [:op [:= :song/set-bpm]]
+     [:bpm [:double {{:min {MIN_BPM:?} :max {MAX_BPM:?}}}]]]]
+   [:song/reset
+    [:map {{:closed true}}
+     [:op [:= :song/reset]]]]])
 
 (def Envelope
   [:map {{:closed true}}
@@ -348,6 +482,24 @@ mod tests {
         assert_eq!(
             payload_len([0xff; HEADER_BYTES]),
             Err(ProtoError::FrameTooLarge(u32::MAX as usize))
+        );
+    }
+
+    #[test]
+    fn every_example_round_trips() {
+        for envelope in examples() {
+            let frame = encode_frame(&envelope).unwrap_or_default();
+            assert_eq!(decode(payload(&frame)), Ok(envelope));
+        }
+    }
+
+    #[test]
+    fn brain_examples_file_is_current() {
+        let checked_in = include_bytes!("../../../brain/test/resources/proto-examples.bin");
+        assert_eq!(
+            checked_in.as_slice(),
+            examples_frames().unwrap_or_default().as_slice(),
+            "run `cargo run -p gorilla-proto --bin gen-malli -- examples > ../brain/test/resources/proto-examples.bin`"
         );
     }
 

@@ -2,12 +2,27 @@
 //! from one graph to the next when the graph is swapped, and nothing here
 //! allocates.
 
+use std::sync::Arc;
+
+use crate::samples::Sample;
+
 /// The synthesized drums the engine was born with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Kick,
     Snare,
     Hat,
+}
+
+impl Builtin {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "kick" => Some(Builtin::Kick),
+            "snare" => Some(Builtin::Snare),
+            "hat" => Some(Builtin::Hat),
+            _ => None,
+        }
+    }
 }
 
 /// What a channel plays. Built on the control thread; read-only on the audio
@@ -19,9 +34,20 @@ pub enum Generator {
         amp_decay: f32,
         pitch_decay: f32,
     },
+    /// Plays a sample once per trigger, resampled by linear interpolation.
+    Sampler {
+        sample: Arc<Sample>,
+        /// Sample frames per output frame.
+        step: f64,
+    },
 }
 
 impl Generator {
+    pub fn sampler(sample: Arc<Sample>, sample_rate: f32) -> Self {
+        let step = f64::from(sample.rate) / f64::from(sample_rate.max(1.0));
+        Generator::Sampler { sample, step }
+    }
+
     pub fn builtin(kind: Builtin, sample_rate: f32) -> Self {
         let decay = |seconds: f32| (-1.0 / (seconds * sample_rate.max(1.0))).exp();
         let (amp_decay, pitch_decay) = match kind {
@@ -42,6 +68,10 @@ impl Generator {
                 voice.amp = 1.0;
                 voice.pitch_env = 1.0;
                 voice.phase = 0.0;
+            }
+            Generator::Sampler { .. } => {
+                voice.amp = 1.0;
+                voice.pos = 0.0;
             }
         }
     }
@@ -74,6 +104,16 @@ impl Generator {
                 voice.pitch_env *= pitch_decay;
                 out
             }
+            Generator::Sampler { sample, step } => {
+                let i = voice.pos as usize;
+                let frac = (voice.pos - voice.pos.floor()) as f32;
+                let (Some(a), b) = (sample.frames.get(i), sample.frames.get(i + 1)) else {
+                    voice.amp = 0.0;
+                    return 0.0;
+                };
+                voice.pos += step;
+                a + (b.copied().unwrap_or(0.0) - a) * frac
+            }
         }
     }
 }
@@ -85,6 +125,8 @@ pub struct Voice {
     pitch_env: f32,
     phase: f32,
     lowpass: f32,
+    /// Read position in a sample, in sample frames.
+    pos: f64,
 }
 
 impl Voice {
@@ -121,5 +163,58 @@ impl Noise {
         x ^= x << 5;
         self.0 = x;
         (x as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> Ctx {
+        Ctx {
+            sample_rate: 48_000.0,
+            noise: Noise::new(1),
+        }
+    }
+
+    #[test]
+    fn a_sampler_plays_its_sample_once_per_trigger() {
+        let sample = Arc::new(Sample {
+            frames: vec![0.5, 1.0, -1.0],
+            rate: 48_000,
+        });
+        let generator = Generator::sampler(sample, 48_000.0);
+        let mut voice = Voice::default();
+        let mut ctx = ctx();
+        assert_eq!(
+            generator.next(&mut voice, &mut ctx),
+            0.0,
+            "silent until triggered"
+        );
+        generator.trigger(&mut voice);
+        let out: Vec<f32> = (0..5)
+            .map(|_| generator.next(&mut voice, &mut ctx))
+            .collect();
+        assert_eq!(out, [0.5, 1.0, -1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_sampler_resamples() {
+        let sample = Arc::new(Sample {
+            frames: vec![0.0, 1.0],
+            rate: 24_000,
+        });
+        let generator = Generator::sampler(sample, 48_000.0);
+        let mut voice = Voice::default();
+        let mut ctx = ctx();
+        generator.trigger(&mut voice);
+        let out: Vec<f32> = (0..5)
+            .map(|_| generator.next(&mut voice, &mut ctx))
+            .collect();
+        assert_eq!(
+            out,
+            [0.0, 0.5, 1.0, 0.5, 0.0],
+            "half-rate sample plays at half speed, easing out to silence"
+        );
     }
 }
