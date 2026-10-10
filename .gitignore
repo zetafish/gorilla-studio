@@ -5,8 +5,9 @@
 # Clojure
 .cpcache/
 .nrepl-port
-.lsp/.cache/
-.clj-kondo/.cache/
+**/.lsp/.cache/
+**/.clj-kondo/.cache/
+**/.clj-kondo/imports/
 .calva/
 .cider-repl-history
 .rebel_readline_history
