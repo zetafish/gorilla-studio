@@ -1,7 +1,10 @@
 //! gorilla-engine: plays the song on the default output device.
 
 mod control;
+mod graph;
+mod model;
 mod seq;
+mod voice;
 
 use std::error::Error;
 use std::net::TcpListener;
@@ -12,9 +15,11 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
-use rtrb::{Consumer, RingBuffer};
+use rtrb::{Consumer, Producer, RingBuffer};
 
-use control::Status;
+use control::{Control, Status};
+use graph::Graph;
+use model::Model;
 use seq::{Playhead, RtMsg, Sequencer};
 
 /// Aborts on any allocation inside `assert_no_alloc` in debug builds, which is
@@ -31,6 +36,9 @@ const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 
 /// Patches waiting for the audio thread. Far more than one song edit needs.
 const RT_QUEUE: usize = 1024;
+
+/// Replaced graphs waiting to be dropped off the audio thread.
+const RECLAIM_QUEUE: usize = 64;
 
 fn main() -> ExitCode {
     match run() {
@@ -58,10 +66,18 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err("output device reports zero channels".into());
     }
 
+    let sample_rate = config.sample_rate as f32;
+    let model = Model::default_drums();
+    let graph = model.build(&Model::default(), sample_rate)?;
+    let (reclaim, old_graphs) = RingBuffer::new(RECLAIM_QUEUE);
+    spawn_reclaim(old_graphs)?;
+
     let stream_errors = Arc::new(AtomicU64::new(0));
     let playhead = Arc::new(Playhead::default());
     let rt = Rt {
         rx,
+        graph: Box::new(graph),
+        reclaim,
         playhead: Arc::clone(&playhead),
         errors: Arc::clone(&stream_errors),
     };
@@ -83,7 +99,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     let control_status = Arc::clone(&status);
     std::thread::Builder::new()
         .name("control".into())
-        .spawn(move || control::serve(listener, tx, control_status))?;
+        .spawn(move || {
+            control::serve(
+                listener,
+                Control::new(model, sample_rate, tx),
+                control_status,
+            )
+        })?;
     eprintln!("gorilla-engine: waiting for the brain on {addr}");
 
     // The stream stays alive as long as this thread holds it.
@@ -116,9 +138,26 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Drops graphs the audio thread has replaced, so it never frees memory.
+fn spawn_reclaim(mut old_graphs: Consumer<Box<Graph>>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("reclaim".into())
+        .spawn(move || {
+            loop {
+                while let Ok(graph) = old_graphs.pop() {
+                    drop(graph);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+        .map(|_| ())
+}
+
 /// What the audio callback owns or shares.
 struct Rt {
     rx: Consumer<RtMsg>,
+    graph: Box<Graph>,
+    reclaim: Producer<Box<Graph>>,
     playhead: Arc<Playhead>,
     errors: Arc<AtomicU64>,
 }
@@ -129,11 +168,13 @@ where
 {
     let Rt {
         mut rx,
+        graph,
+        reclaim,
         playhead,
         errors,
     } = rt;
     let channels = usize::from(config.channels);
-    let mut seq = Sequencer::new(config.sample_rate as f32, BPM, playhead);
+    let mut seq = Sequencer::new(config.sample_rate as f32, BPM, playhead, graph, reclaim);
 
     let stream = device.build_output_stream(
         *config,

@@ -17,10 +17,9 @@ use std::time::Duration;
 use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError, Telemetry};
 use rtrb::Producer;
 
-use crate::seq::{Playhead, Row, RtMsg};
-
-/// The one pattern the engine knows until it plays real songs.
-const DRUMS: &str = "drums";
+use crate::graph::Steps;
+use crate::model::{Model, steps_from};
+use crate::seq::{Playhead, RtMsg};
 
 /// About 60 Hz.
 const TELEMETRY_INTERVAL: Duration = Duration::from_millis(16);
@@ -51,7 +50,7 @@ impl Status {
 
 /// Accepts one brain connection at a time, forever. A brain that disconnects
 /// or sends garbage never affects playback.
-pub fn serve(listener: TcpListener, mut tx: Producer<RtMsg>, status: Arc<Status>) {
+pub fn serve(listener: TcpListener, mut control: Control, status: Arc<Status>) {
     for conn in listener.incoming() {
         match conn {
             Ok(stream) => {
@@ -59,7 +58,7 @@ pub fn serve(listener: TcpListener, mut tx: Producer<RtMsg>, status: Arc<Status>
                     .peer_addr()
                     .map_or_else(|_| "unknown".to_string(), |a| a.to_string());
                 eprintln!("gorilla-engine: brain connected from {peer}");
-                match handle(stream, &mut tx, &status) {
+                match handle(stream, &mut control, &status) {
                     Ok(()) => eprintln!("gorilla-engine: brain disconnected"),
                     Err(err) => eprintln!("gorilla-engine: brain connection dropped: {err}"),
                 }
@@ -69,7 +68,7 @@ pub fn serve(listener: TcpListener, mut tx: Producer<RtMsg>, status: Arc<Status>
     }
 }
 
-fn handle(stream: TcpStream, tx: &mut Producer<RtMsg>, status: &Arc<Status>) -> io::Result<()> {
+fn handle(stream: TcpStream, control: &mut Control, status: &Arc<Status>) -> io::Result<()> {
     let writer = stream.try_clone()?;
     let done = Arc::new(AtomicBool::new(false));
     let telemetry = {
@@ -80,7 +79,7 @@ fn handle(stream: TcpStream, tx: &mut Producer<RtMsg>, status: &Arc<Status>) -> 
             .spawn(move || send_telemetry(writer, &status, &done))?
     };
 
-    let result = read_patches(&stream, tx, status);
+    let result = read_patches(&stream, control, status);
 
     done.store(true, Ordering::Release);
     let _ = stream.shutdown(Shutdown::Both);
@@ -116,11 +115,7 @@ fn write_frame(out: &mut TcpStream, msg: &Telemetry) -> io::Result<()> {
     out.write_all(&frame)
 }
 
-fn read_patches(
-    mut stream: &TcpStream,
-    tx: &mut Producer<RtMsg>,
-    status: &Status,
-) -> io::Result<()> {
+fn read_patches(mut stream: &TcpStream, control: &mut Control, status: &Status) -> io::Result<()> {
     loop {
         let mut header = [0; HEADER_BYTES];
         match stream.read_exact(&mut header) {
@@ -134,7 +129,7 @@ fn read_patches(
         stream.read_exact(&mut payload)?;
 
         // A bad payload is rejected on its own; the stream stays in sync.
-        match apply(&payload, tx) {
+        match control.apply(&payload) {
             Ok(envelope) => {
                 status.epoch.store(envelope.epoch, Ordering::Release);
             }
@@ -143,61 +138,114 @@ fn read_patches(
     }
 }
 
-/// Decodes and validates a payload, then queues all of its ops, or none.
-fn apply(payload: &[u8], tx: &mut Producer<RtMsg>) -> Result<Envelope, String> {
-    let envelope = gorilla_proto::decode(payload).map_err(|e: ProtoError| e.to_string())?;
-    let msgs = envelope
-        .ops
-        .iter()
-        .map(translate)
-        .collect::<Result<Vec<_>, _>>()?;
-    if tx.slots() < msgs.len() {
-        return Err(format!(
-            "audio thread busy: {} ops, {} free slots",
-            msgs.len(),
-            tx.slots()
-        ));
-    }
-    for msg in msgs {
-        tx.push(msg)
-            .map_err(|_| "ring buffer filled while queueing".to_string())?;
-    }
-    Ok(envelope)
+/// The control thread's side of the engine: the song model and the queue to
+/// the audio thread.
+pub struct Control {
+    model: Model,
+    sample_rate: f32,
+    tx: Producer<RtMsg>,
 }
 
-fn translate(patch: &Patch) -> Result<RtMsg, String> {
-    match patch {
-        Patch::SetSteps {
-            pattern,
-            row,
-            steps,
-        } => Ok(RtMsg::SetSteps {
-            row: drum_row(pattern, row)?,
-            steps: steps.map(|s| s.0),
-        }),
-        Patch::ScheduleBar {
-            pattern,
-            row,
-            bar,
-            steps,
-        } => Ok(RtMsg::ScheduleBar {
-            row: drum_row(pattern, row)?,
-            bar: *bar,
-            steps: steps.map(|s| s.0),
-        }),
-        Patch::SetTransport { playing } => Ok(RtMsg::Transport { playing: *playing }),
-    }
+/// An op that becomes a message once the final graph layout is known.
+enum Pending<'a> {
+    Steps(&'a str, &'a str, Steps),
+    Bar(&'a str, &'a str, u64, Steps),
+    Transport(bool),
 }
 
-fn drum_row(pattern: &str, row: &str) -> Result<Row, String> {
-    if pattern != DRUMS {
-        return Err(format!("unknown pattern {pattern:?}"));
+impl Control {
+    /// `model` must be what the audio thread's current graph was built from.
+    pub fn new(model: Model, sample_rate: f32, tx: Producer<RtMsg>) -> Self {
+        Self {
+            model,
+            sample_rate,
+            tx,
+        }
     }
-    match row {
-        "kick" => Ok(Row::Kick),
-        "snare" => Ok(Row::Snare),
-        "hat" => Ok(Row::Hat),
-        other => Err(format!("unknown row {other:?}")),
+
+    /// Decodes and validates a payload, then queues all of its ops, or none.
+    fn apply(&mut self, payload: &[u8]) -> Result<Envelope, String> {
+        let envelope = gorilla_proto::decode(payload).map_err(|e: ProtoError| e.to_string())?;
+        let (next, msgs) = self.plan(&envelope.ops)?;
+        if self.tx.slots() < msgs.len() {
+            return Err(format!(
+                "audio thread busy: {} ops, {} free slots",
+                msgs.len(),
+                self.tx.slots()
+            ));
+        }
+        for msg in msgs {
+            self.tx
+                .push(msg)
+                .map_err(|_| "ring buffer filled while queueing".to_string())?;
+        }
+        self.model = next;
+        Ok(envelope)
+    }
+
+    /// The model after `ops`, and the messages that take the audio thread
+    /// there. Changes to the model's shape become one new graph, swapped in
+    /// before the other messages; nothing is committed here.
+    fn plan(&self, ops: &[Patch]) -> Result<(Model, Vec<RtMsg>), String> {
+        let mut next = self.model.clone();
+        let mut reshaped = false;
+        let mut pending = Vec::with_capacity(ops.len());
+        for op in ops {
+            match op {
+                Patch::SetSteps {
+                    pattern,
+                    row,
+                    steps,
+                } => {
+                    let steps = steps_from(steps);
+                    if next.set_steps(pattern, row, steps) {
+                        reshaped = true;
+                    } else {
+                        pending.push(Pending::Steps(pattern, row, steps));
+                    }
+                }
+                Patch::ScheduleBar {
+                    pattern,
+                    row,
+                    bar,
+                    steps,
+                } => pending.push(Pending::Bar(pattern, row, *bar, steps_from(steps))),
+                Patch::SetTransport { playing } => pending.push(Pending::Transport(*playing)),
+            }
+        }
+
+        let mut msgs = Vec::with_capacity(pending.len() + 1);
+        if reshaped {
+            let graph = next.build(&self.model, self.sample_rate)?;
+            msgs.push(RtMsg::SwapGraph(Box::new(graph)));
+        }
+        let row_index = |pattern: &str, row: &str| {
+            next.row_index(pattern, row)
+                .ok_or_else(|| format!("unknown row {row:?} in pattern {pattern:?}"))
+        };
+        for p in pending {
+            msgs.push(match p {
+                Pending::Steps(pattern, row, steps) => {
+                    let (pattern, row) = row_index(pattern, row)?;
+                    RtMsg::SetSteps {
+                        pattern,
+                        row,
+                        steps,
+                    }
+                }
+                Pending::Bar(pattern, row, bar, steps) => {
+                    let (pattern, row) = row_index(pattern, row)?;
+                    RtMsg::ScheduleBar {
+                        pattern,
+                        row,
+                        bar,
+                        steps,
+                    }
+                }
+                Pending::Transport(playing) => RtMsg::Transport { playing },
+            });
+        }
+        Ok((next, msgs))
     }
 }
 
@@ -227,15 +275,25 @@ mod tests {
         gorilla_proto::encode_frame(envelope).unwrap_or_default()
     }
 
+    fn control(capacity: usize) -> (Control, Consumer<RtMsg>) {
+        let (tx, rx) = RingBuffer::new(capacity);
+        (Control::new(Model::default_drums(), SR, tx), rx)
+    }
+
     /// Starts a control server on a free port. `None` if the OS refuses.
     fn start() -> Option<(SocketAddr, Consumer<RtMsg>, Arc<Status>)> {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().ok()?;
-        let (tx, rx) = RingBuffer::new(8);
+        let (control, rx) = control(8);
         let status = Arc::new(Status::new(Arc::default()));
         let server_status = Arc::clone(&status);
-        std::thread::spawn(move || serve(listener, tx, server_status));
+        std::thread::spawn(move || serve(listener, control, server_status));
         Some((addr, rx, status))
+    }
+
+    fn apply(control: &mut Control, envelope: &Envelope) -> Result<Envelope, String> {
+        let bytes = frame(envelope);
+        control.apply(bytes.get(HEADER_BYTES..).unwrap_or_default())
     }
 
     fn send(addr: SocketAddr, bytes: &[u8]) -> bool {
@@ -255,8 +313,11 @@ mod tests {
         false
     }
 
+    const SR: f32 = 48_000.0;
+
     const ALL_HATS: RtMsg = RtMsg::SetSteps {
-        row: Row::Hat,
+        pattern: 0,
+        row: 2,
         steps: [true; PATTERN_STEPS],
     };
 
@@ -268,7 +329,7 @@ mod tests {
             return;
         };
         let mut bytes = frame(&set_steps("drums", "cowbell", 1));
-        bytes.extend(frame(&set_steps("bass", "hat", 2)));
+        bytes.extend(frame(&set_steps("bass", "cowbell", 2)));
         bytes.extend(frame(&set_steps("drums", "hat", 3)));
         assert!(send(addr, &bytes));
 
@@ -355,7 +416,7 @@ mod tests {
 
     #[test]
     fn schedule_bar_reaches_the_audio_thread() {
-        let (mut tx, mut rx) = RingBuffer::new(4);
+        let (mut control, mut rx) = control(4);
         let envelope = Envelope {
             epoch: 2,
             ops: vec![Patch::ScheduleBar {
@@ -365,13 +426,12 @@ mod tests {
                 steps: [Step(false); PATTERN_STEPS],
             }],
         };
-        let bytes = frame(&envelope);
-        let payload = bytes.get(HEADER_BYTES..).unwrap_or_default();
-        assert_eq!(apply(payload, &mut tx), Ok(envelope));
+        assert_eq!(apply(&mut control, &envelope), Ok(envelope));
         assert_eq!(
             rx.pop(),
             Ok(RtMsg::ScheduleBar {
-                row: Row::Kick,
+                pattern: 0,
+                row: 0,
                 bar: 12,
                 steps: [false; PATTERN_STEPS]
             })
@@ -380,12 +440,44 @@ mod tests {
 
     #[test]
     fn a_full_ring_rejects_the_whole_envelope() {
-        let (mut tx, mut rx) = RingBuffer::new(1);
+        let (mut control, mut rx) = control(1);
         let mut envelope = set_steps("drums", "kick", 9);
         envelope.ops.extend(set_steps("drums", "hat", 9).ops);
-        let bytes = frame(&envelope);
-        let payload = bytes.get(HEADER_BYTES..).unwrap_or_default();
-        assert!(apply(payload, &mut tx).is_err());
+        assert!(apply(&mut control, &envelope).is_err());
         assert!(rx.pop().is_err());
+    }
+
+    #[test]
+    fn new_rows_and_patterns_swap_in_a_graph_first() {
+        let (mut control, mut rx) = control(8);
+        let mut envelope = set_steps("drums", "kick", 1);
+        envelope.ops.extend(set_steps("fills", "hat", 1).ops);
+        assert!(apply(&mut control, &envelope).is_ok());
+
+        let swap = rx.pop();
+        assert!(matches!(&swap, Ok(RtMsg::SwapGraph(g)) if g.patterns.len() == 2));
+        if let Ok(RtMsg::SwapGraph(graph)) = swap {
+            assert_eq!(graph.row_carry.get(1), Some(&vec![None]));
+            assert_eq!(graph.channel_carry, [Some(0), Some(1), Some(2)]);
+        }
+        assert!(matches!(
+            rx.pop(),
+            Ok(RtMsg::SetSteps {
+                pattern: 0,
+                row: 0,
+                ..
+            })
+        ));
+        assert!(rx.pop().is_err(), "the new row's steps came with the graph");
+    }
+
+    #[test]
+    fn a_rejected_envelope_leaves_the_model_alone() {
+        let (mut control, mut rx) = control(8);
+        let mut envelope = set_steps("fills", "hat", 1);
+        envelope.ops.extend(set_steps("drums", "cowbell", 1).ops);
+        assert!(apply(&mut control, &envelope).is_err());
+        assert!(rx.pop().is_err());
+        assert_eq!(control.model, Model::default_drums());
     }
 }
