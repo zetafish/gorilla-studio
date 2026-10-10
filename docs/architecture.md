@@ -95,14 +95,18 @@ Song changes flow down as validated **patches**; meters, playhead and scopes flo
 The engine never sees EDN. A watch on the song atom diffs old and new values and sends the smallest list of operations:
 
 ```clojure
-[[:pattern/set-steps :drums :hat [1 0 0 1 0 0 1 0 ...]]
- [:mixer/set-param 1 :vol 0.85]
- [:graph/insert-fx 2 0 [:delay {:time 3/16}]]]
+{:epoch 42
+ :ops [{:op :pattern/set-steps :pattern :drums :row :hat :steps [1 0 0 1 0 0 1 0 ...]}
+       {:op :mixer/set-param :mixer 1 :param :vol :value 0.85}
+       {:op :graph/insert-fx :mixer 2 :slot 0 :fx [:delay {:time 3/16}]}]}
 ```
+
+- **Wire format:** each message is a 4-byte big-endian length and a MessagePack map, at most 64 KiB. Ops are maps tagged by `:op` (a serde internally tagged enum). Keywords travel as strings holding their full name, so `:pattern/set-steps` is `"pattern/set-steps"`.
 
 - Validated twice: malli in the brain, serde-parsed Rust types in the engine. Malformed input is rejected; current state stays untouched.
 - Each patch carries an epoch so the engine can report which song version it's playing.
 - **`engine/proto` is the single source of truth.** Rust patch types generate the malli schemas, so the sides can't drift. A new patch type is a compile error until both sides handle it.
+- **Schema generation (for now):** `gorilla_proto::malli_schema()` renders `brain/src/gorilla/proto_schema.cljc`, written next to the types it mirrors. A Rust test fails when the checked-in file is stale, and proto tests decode hand-built brain-shaped messages. Regenerate with `cargo run -p gorilla-proto --bin gen-malli > ../brain/src/gorilla/proto_schema.cljc` from `engine/`.
 
 ## 4. Engine threads and the real-time rules
 
@@ -210,6 +214,6 @@ engine/                     Rust workspace
 
 ## Open questions
 
-- Generating malli schemas from Rust types: custom build step, or via JSON Schema (`schemars`) and malli's JSON Schema support?
+- Generating malli schemas from Rust types: the hand-rendered, golden-tested `malli_schema()` is enough for one patch type. Revisit (derive macro, or `schemars` JSON Schema → malli) once there are several.
 - Plugin sandbox audio: synchronous round-trip each buffer (no extra latency, tighter deadline) or one buffer of added latency?
 - Does the brain ship as a JVM app or a GraalVM native image on desktop?
