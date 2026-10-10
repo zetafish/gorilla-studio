@@ -7,23 +7,16 @@ A pattern-based music workstation in the spirit of FL Studio, built the way Over
 
 The two run as separate processes. The engine plays its own copy of the song and never waits on the brain, so a garbage-collection pause or a REPL reload never makes a click.
 
-Status: design stage. See [`docs/architecture.md`](docs/architecture.md) for the full design and [`CLAUDE.md`](CLAUDE.md) for the rules every change follows.
+See [`docs/architecture.md`](docs/architecture.md) for the design, [`docs/roadmap.md`](docs/roadmap.md) for milestones and known gaps, and [`CLAUDE.md`](CLAUDE.md) for the rules every change follows.
 
-## First milestone: the vertical slice
+## Status
 
-Prove the two-process design end to end before building out the layout:
+Milestones 1–3 are done: the two-process slice, telemetry with resync, and live patterns. Next is milestone 4, where the song drives the engine (tempo, any patterns, samples). Details in the [roadmap](docs/roadmap.md).
 
-1. Rust engine plays a hard-coded 16-step drum pattern through `cpal`.
-2. One patch type, `[:pattern/set-steps pattern row steps]`, arrives over a local socket and is applied at a buffer boundary.
-3. A Clojure REPL holds the song in an atom; toggling a step diffs the song and sends the patch while audio keeps playing.
-
-Done when you can toggle hi-hat steps from the REPL with no audible glitch, and killing the brain process leaves the beat playing.
-
-Status: implemented. To try it:
+## Try it
 
 ```sh
-cd engine && cargo run -p gorilla-rt     # plays the default beat, listens on 127.0.0.1:7878
-cd brain && clojure -M:nrepl             # in another terminal
+cd brain && clojure -M:nrepl     # the brain starts the engine itself on (connect!)
 ```
 
 Then, in the REPL (helpers live in `brain/dev/user.clj`):
@@ -34,27 +27,18 @@ Then, in the REPL (helpers live in `brain/dev/user.clj`):
 (undo!)
 (stop!) (play!)     ; transport; play restarts from the top
 (playhead)          ; {:bar 12 :step 3 :playing true :epoch 41 ...}
-(disconnect!)       ; the engine keeps playing what it has
-(reload!)           ; after code changes, keeps the song
-```
 
-## Third milestone: live patterns
-
-Status: implemented. Rows can be functions of the bar number, evaluated two bars ahead and queued in the engine per bar:
-
-```clojure
 (defpattern :hat (fn [bar] (euclid (+ 3 (mod bar 4)) 16)))
 (defpattern :kick (fn [bar] (every 2 bar "x..x..x...x.x..." "x...x...x...x...")))
 (defpattern :snare (fn [bar] (overlay "....x.......x..." (chance 0.15 bar))))
 (patterns)          ; what's live, with source
 (unpattern :hat)    ; back to the song's row
+
+(disconnect!)       ; the engine keeps playing what it has
+(reload!)           ; after code changes, keeps the song
 ```
 
-Generators live in `gorilla.pattern`: `steps` (also parses `"x..x"` strings), `euclid`, `rotate`, `invert`, `overlay`, `mask`, `chance`, `every`. Redefining a pattern lands on the next bar line.
-
-## Second milestone: the engine talks back
-
-Status: implemented. The engine says hello on connect (a random engine id and its epoch) and streams the playhead at about 60 Hz on the same socket. The brain uses the hello to send only what a reconnecting engine is missing, and `connect!` keeps the link up, restarting a crashed engine with `cargo run`.
+To run the engine yourself instead: `cd engine && cargo run -p gorilla-rt` (listens on `127.0.0.1:7878`); `(connect!)` then uses it.
 
 ## Development
 

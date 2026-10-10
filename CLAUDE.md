@@ -3,7 +3,7 @@
 A pattern-based DAW: a Clojure **brain** (song model, commands, undo, UI, live coding, agent access) and a Rust **engine** (real-time audio, DSP, plugins), running as two processes. Full design: [`docs/architecture.md`](docs/architecture.md). Read it before changing anything structural.
 
 ## Start every session here
-1. Read `README.md` for the current milestone.
+1. Read `docs/roadmap.md` for the current milestone and known gaps. When a milestone finishes or a gap closes, update it in the same change.
 2. Read the section of `docs/architecture.md` that covers what you're touching.
 3. If a change contradicts the architecture, update `docs/architecture.md` in the same change and say why.
 
