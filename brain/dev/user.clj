@@ -15,12 +15,21 @@
 
     (defpattern :hat (fn [bar] (euclid (+ 3 (mod bar 4)) 16)))
     (defpattern :kick (fn [bar] (every 4 bar \"x..x..x...x.x...\" \"x...x...x...x...\")))
-    (unpattern :hat)    ; back to the song's row"
+    (unpattern :hat)    ; back to the song's row
+
+  The song drives the engine:
+
+    (bpm! 96)
+    (channel! :pop \"/System/Library/Sounds/Pop.aiff\")   ; a sampler
+    (channel! :kick2 :kick)                               ; a built-in drum
+    (row! :pop \"....x.......x..x\")                       ; row :pop in :drums
+    (row! :fills :pop \"xxxx............\")               ; another pattern
+    (remove-row! :pop) (remove-channel! :pop)"
   (:require [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.track :as track]
             [gorilla.engine :as engine]
             [gorilla.live :as live :refer [defpattern]]
-            [gorilla.pattern :refer [steps euclid rotate invert overlay mask chance every]]
+            [gorilla.pattern :as pattern :refer [steps euclid rotate invert overlay mask chance every]]
             [gorilla.studio :as studio]))
 
 (defn reload!
@@ -53,6 +62,46 @@
   "Live patterns and their source."
   []
   (into (sorted-map) (map (fn [[k v]] [k (:source v)])) @live/patterns))
+
+(def ^:private steps* pattern/steps)
+
+(defn- dispatch! [cmd] (studio/dispatch! cmd) :ok)
+
+(defn bpm! [bpm] (dispatch! {:cmd :song/set-bpm :bpm bpm}))
+
+(defn channel!
+  "A sampler for a path string, or a built-in drum for :kick, :snare or :hat."
+  [channel source]
+  (when (string? source)
+    (let [f (java.io.File. (engine/sample-path source))]
+      (when-not (.isFile f)
+        (throw (ex-info (str "No such sample: " f) {:sample source})))))
+  (dispatch! {:cmd :channel/set :channel channel
+              :gen (if (string? source)
+                     [:sampler {:sample source}]
+                     [:builtin {:voice source}])}))
+
+(defn row!
+  "Adds a row playing `channel` (same id) to a pattern, :drums by default."
+  ([channel] (row! :drums channel nil))
+  ([channel-or-pattern steps-or-channel]
+   (if (keyword? steps-or-channel)
+     (row! channel-or-pattern steps-or-channel nil)
+     (row! :drums channel-or-pattern steps-or-channel)))
+  ([pattern channel steps]
+   (dispatch! (cond-> {:cmd :pattern/add-row :pattern pattern :row channel}
+                steps (assoc :steps (steps* steps))))))
+
+(defn remove-row!
+  ([channel] (remove-row! :drums channel))
+  ([pattern channel] (dispatch! {:cmd :pattern/remove-row :pattern pattern :row channel})))
+
+(defn remove-channel! [channel] (dispatch! {:cmd :channel/remove :channel channel}))
+
+(defn rejection
+  "The engine's last refusal, if any."
+  []
+  @engine/last-rejection)
 
 (defn toggle!
   ([row step] (toggle! :drums row step))

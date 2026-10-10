@@ -8,3 +8,6 @@
 
 (deftest rows-must-have-sixteen-steps
   (is (not (song/valid? (assoc-in song/default-song [:patterns :drums :steps :hat] [1 0 1])))))
+
+(deftest every-row-needs-a-channel
+  (is (not (song/valid? (update song/default-song :channels dissoc :hat)))))

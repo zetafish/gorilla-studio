@@ -83,7 +83,11 @@
                          (< bar (:bar st 0)))
                    {}
                    sent)
-            result (plan @patterns sent (inc bar) (+ bar lookahead-bars))]
+            ;; A live row removed from the song has nowhere to play.
+            live (into {} (filter (fn [[[pattern row]]]
+                                    (get-in @studio/song [:patterns pattern :steps row])))
+                       @patterns)
+            result (plan live sent (inc bar) (+ bar lookahead-bars))]
         (report-errors! errors (:errors result))
         (when (or (empty? (:ops result))
                   (engine/send-live! (:ops result)))

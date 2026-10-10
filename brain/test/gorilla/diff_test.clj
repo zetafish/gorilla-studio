@@ -1,5 +1,5 @@
 (ns gorilla.diff-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [clojure.test :refer [deftest is testing]]
             [gorilla.command :as command]
             [gorilla.diff :as diff]
             [gorilla.proto-schema :as proto]
@@ -17,7 +17,39 @@
              :steps [1 1 1 0 1 0 1 0 1 0 1 0 1 0 1 0]}]
            (diff/diff s new)))))
 
-(deftest snapshot-covers-every-row-and-matches-the-proto-schema
+(deftest snapshot-replaces-everything-and-matches-the-proto-schema
   (let [ops (diff/snapshot s)]
-    (is (= [:hat :kick :snare] (map :row ops)))
+    (is (= [:song/reset :song/set-bpm] (map :op (take 2 ops))))
+    (is (= {:op :channel/set :channel :hat :generator {:type :builtin :voice :hat}}
+           (first (filter #(= :channel/set (:op %)) ops))))
+    (is (= [:hat :kick :snare] (keep :row ops)))
     (is (m/validate proto/Envelope {:epoch 1 :ops ops}))))
+
+(defn- run [song & cmds] (reduce command/run song cmds))
+
+(def clap [:sampler {:sample "/samples/clap.wav"}])
+
+(deftest structural-changes
+  (testing "a new channel and its row"
+    (let [new (run s {:cmd :channel/set :channel :clap :gen clap}
+                   {:cmd :pattern/add-row :pattern :drums :row :clap :steps (vec (repeat 16 1))})]
+      (is (= [{:op :channel/set :channel :clap :generator {:type :sampler :sample "/samples/clap.wav"}}
+              {:op :pattern/set-steps :pattern :drums :row :clap :steps (vec (repeat 16 1))}]
+             (diff/diff s new)))))
+  (testing "removing a channel needs only the channel op"
+    (is (= [{:op :channel/remove :channel :hat}]
+           (diff/diff s (run s {:cmd :channel/remove :channel :hat})))))
+  (testing "removing a row and a pattern"
+    (is (= [{:op :pattern/remove-row :pattern :drums :row :hat}]
+           (diff/diff s (run s {:cmd :pattern/remove-row :pattern :drums :row :hat}))))
+    (is (= [{:op :pattern/remove :pattern :drums}]
+           (diff/diff s (run s {:cmd :pattern/remove :pattern :drums})))))
+  (testing "tempo"
+    (is (= [{:op :song/set-bpm :bpm 128.0}]
+           (diff/diff s (run s {:cmd :song/set-bpm :bpm 128})))))
+  (testing "every diff is a valid envelope"
+    (let [new (run s {:cmd :channel/set :channel :clap :gen clap}
+                   {:cmd :pattern/add-row :pattern :fills :row :clap}
+                   {:cmd :channel/remove :channel :snare}
+                   {:cmd :song/set-bpm :bpm 90})]
+      (is (m/validate proto/Envelope {:epoch 1 :ops (diff/diff s new)})))))

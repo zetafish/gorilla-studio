@@ -47,6 +47,15 @@
 (defonce ^{:doc "Counts transport starts; each one restarts the engine's bar numbers."}
   transport-starts (atom 0))
 
+(defonce ^{:doc "Transport state the brain wants; restored on a new engine."}
+  desired-playing (atom true))
+
+(defonce ^{:doc "Directory relative sample paths in the song are resolved against."}
+  samples-root (atom (System/getProperty "user.dir")))
+
+(defonce ^{:doc "The last :engine/rejected message, for inspection."}
+  last-rejection (atom nil))
+
 (defn connected? [] (some? @link))
 
 (defn engine-id
@@ -73,12 +82,23 @@
         (lost! current (ex-message e))
         false))))
 
+(defn sample-path
+  "Absolute path for a sample in the song."
+  [sample]
+  (let [f (io/file sample)]
+    (.getAbsolutePath (if (.isAbsolute f) f (io/file @samples-root sample)))))
+
+(defn- resolve-samples [op]
+  (if (= :sampler (get-in op [:generator :type]))
+    (update-in op [:generator :sample] sample-path)
+    op))
+
 (defn- sync-to!
   "Sends whatever takes the engine from what it holds to `song`."
   [song]
   (locking write-lock
     (when-let [{:keys [engine-id]} @link]
-      (let [ops (diff/diff (:song @synced) song)]
+      (let [ops (mapv resolve-samples (diff/diff (:song @synced) song))]
         (when (and (seq ops)
                    (send-envelope! {:epoch (swap! epoch inc) :ops ops}))
           (reset! synced {:engine-id engine-id :song song}))))))
@@ -99,6 +119,7 @@
   ([playing? then-ops]
    (when-not (connected?)
      (throw (ex-info "Not connected to the engine" {})))
+   (reset! desired-playing (boolean playing?))
    (when playing? (swap! transport-starts inc))
    (send-live! (into [{:op :transport/set :playing (boolean playing?)}] then-ops))))
 
@@ -110,6 +131,28 @@
       (throw (ex-info "Invalid telemetry" {:msg msg})))
     msg))
 
+(def ^:private live-ops
+  "Ops that aren't song changes: a rejected one needs no resync."
+  #{"transport/set" "pattern/schedule-bar"})
+
+(defn- rejected!
+  "The engine refused an envelope and applied none of it. If it held song
+  changes, the brain no longer knows what the engine has: resend everything."
+  [{:keys [song]} {:keys [ops reason epoch] :as msg}]
+  (reset! last-rejection msg)
+  (log "the engine rejected epoch" epoch (pr-str ops) "-" reason)
+  (let [ops (set ops)]
+    (cond
+      (contains? ops "song/reset")
+      (do (log "it refused the whole song; it keeps playing what it had."
+               "The next edit sends the whole song again.")
+          (locking write-lock (swap! synced assoc :song nil)))
+
+      (some (complement live-ops) ops)
+      (do (log "resending the whole song")
+          (locking write-lock (swap! synced assoc :song nil))
+          (sync-to! @song)))))
+
 (defn- start-reader!
   "Reads telemetry until the connection ends, then marks the link lost."
   [{:keys [^Socket socket in] :as current}]
@@ -118,8 +161,12 @@
            (try
              (loop []
                (let [msg (read-telemetry in)]
-                 (when (= :engine/playhead (:op msg))
-                   (reset! playhead (assoc msg :received-at (System/currentTimeMillis))))
+                 (case (:op msg)
+                   :engine/playhead
+                   (reset! playhead (assoc msg :received-at (System/currentTimeMillis)))
+                   :engine/rejected
+                   (rejected! current msg)
+                   nil)
                  (recur)))
              (catch java.io.EOFException _
                (lost! current "it closed the connection"))
@@ -162,15 +209,19 @@
          current {:socket socket :in in :out (.getOutputStream socket)
                   :song song-atom :engine-id engine-id}]
      (.setSoTimeout socket 0)
-     (locking write-lock
-       ;; Epochs only move forward, even across brains and engine restarts.
-       (swap! epoch max (:epoch hello))
-       ;; Same engine, nothing else written since: it still holds what we sent.
-       (when-not (and (= engine-id (:engine-id @synced))
-                      (= (:epoch hello) @epoch))
-         (reset! synced {:engine-id engine-id :song nil}))
-       (reset! link current))
-     (sync-to! @song-atom)
+     (let [fresh? (locking write-lock
+                    ;; Epochs only move forward, even across brains and engine restarts.
+                    (swap! epoch max (:epoch hello))
+                    (reset! link current)
+                    ;; Same engine, nothing else written since: it still holds what we sent.
+                    (when-not (and (= engine-id (:engine-id @synced))
+                                   (= (:epoch hello) @epoch))
+                      (reset! synced {:engine-id engine-id :song nil})
+                      true))]
+       (sync-to! @song-atom)
+       ;; A new engine starts playing; put the transport back the way it was.
+       (when (and fresh? (not @desired-playing))
+         (send-live! [{:op :transport/set :playing false}])))
      (start-reader! current)
      (add-watch song-atom ::engine
                 (fn [_ _ _ new]

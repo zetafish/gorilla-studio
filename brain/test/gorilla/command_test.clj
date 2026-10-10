@@ -29,3 +29,17 @@
   (testing "wrong step count"
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid params"
                           (command/run s {:cmd :pattern/set-steps :pattern :drums :row :hat :steps [1]})))))
+
+(deftest channels-and-rows
+  (testing "rows need a channel"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No channel"
+                          (command/run s {:cmd :pattern/add-row :pattern :drums :row :clap}))))
+  (testing "removing a channel removes its rows everywhere"
+    (let [song (command/run s {:cmd :channel/remove :channel :hat})]
+      (is (nil? (get-in song [:patterns :drums :steps :hat])))
+      (is (song/valid? song))))
+  (testing "generators are checked"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Invalid params"
+                          (command/run s {:cmd :channel/set :channel :x :gen [:builtin {:voice :cowbell}]}))))
+  (testing "tempo is bounded"
+    (is (thrown? clojure.lang.ExceptionInfo (command/run s {:cmd :song/set-bpm :bpm 5})))))

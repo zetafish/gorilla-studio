@@ -58,3 +58,44 @@
   (fn [song {:keys [pattern row steps]}]
     (existing-row! song pattern row)
     (assoc-in song [:patterns pattern :steps row] steps)))
+
+(defcommand :song/set-bpm
+  {:params [:map [:bpm [:and number? [:>= 20] [:<= 999]]]]
+   :label "Set tempo"}
+  (fn [song {:keys [bpm]}]
+    (assoc song :song/bpm bpm)))
+
+(defcommand :channel/set
+  {:params [:map [:channel :keyword] [:gen song/Generator]]
+   :label "Set channel"}
+  (fn [song {:keys [channel gen]}]
+    (assoc-in song [:channels channel :gen] gen)))
+
+(defcommand :channel/remove
+  {:params [:map [:channel :keyword]]
+   :label "Remove channel"}
+  (fn [song {:keys [channel]}]
+    (-> song
+        (update :channels dissoc channel)
+        (update :patterns update-vals #(update % :steps dissoc channel)))))
+
+(defcommand :pattern/add-row
+  {:params [:map [:pattern :keyword] [:row :keyword] [:steps {:optional true} song/Steps]]
+   :label "Add row"}
+  (fn [song {:keys [pattern row steps]}]
+    (when-not (get-in song [:channels row])
+      (throw (ex-info (str "No channel " row " for the row to play") {:row row})))
+    (assoc-in song [:patterns pattern :steps row]
+              (or steps (vec (repeat proto/pattern-steps 0))))))
+
+(defcommand :pattern/remove-row
+  {:params [:map [:pattern :keyword] [:row :keyword]]
+   :label "Remove row"}
+  (fn [song {:keys [pattern row]}]
+    (update-in song [:patterns pattern :steps] dissoc row)))
+
+(defcommand :pattern/remove
+  {:params [:map [:pattern :keyword]]
+   :label "Remove pattern"}
+  (fn [song {:keys [pattern]}]
+    (update song :patterns dissoc pattern)))

@@ -8,6 +8,8 @@
 
 (defn- reset-engine-state! []
   (engine/stop-auto-connect!)
+  (reset! engine/desired-playing true)
+  (reset! engine/last-rejection nil)
   (reset! @#'engine/epoch 0)
   (reset! @#'engine/synced nil)
   (reset! engine/playhead nil))
@@ -26,7 +28,10 @@
 
 (defn- read-patch [{:keys [in]}] (wire/read-frame in))
 
-(defn- rows [envelope] (mapv :row (:ops envelope)))
+(defn- rows
+  "Rows set by an envelope's `:pattern/set-steps` ops."
+  [envelope]
+  (->> (:ops envelope) (filter #(= :pattern/set-steps (:op %))) (mapv :row)))
 
 (defn- connect-to [server song engine-id epoch]
   (let [connected (future (engine/connect! song {:port (.getLocalPort ^ServerSocket server)}))
@@ -121,3 +126,57 @@
         (let [second-engine (accept server 9 0)]
           (is (= ["hat" "kick" "snare"] (rows (read-patch second-engine))))
           (is (eventually engine/connected?)))))))
+
+(deftest a-rejected-song-change-resends-the-whole-song
+  (with-open [server (ServerSocket. 0)]
+    (let [song (atom song/default-song)
+          {:keys [out] :as fake} (connect-to server song 7 0)
+          _ (read-patch fake)
+          _ (swap! song assoc-in [:patterns :drums :steps :hat 1] 1)
+          {:keys [epoch]} (read-patch fake)]
+      (wire/write-frame! out (wire/encode {:op :engine/rejected :epoch epoch
+                                           :reason "nope" :ops ["pattern/set-steps"]}))
+      (let [resync (read-patch fake)]
+        (is (= :song/reset (:op (first (:ops resync)))))
+        (is (= ["hat" "kick" "snare"] (rows resync))))
+      (testing "a refused snapshot is not resent"
+        (wire/write-frame! out (wire/encode {:op :engine/rejected :epoch (inc epoch)
+                                             :reason "bad sample" :ops ["song/reset"]}))
+        (is (eventually #(= "bad sample" (:reason @engine/last-rejection))))
+        (swap! song assoc-in [:patterns :drums :steps :hat 2] 0)
+        (is (= :song/reset (:op (first (:ops (read-patch fake)))))
+            "the next edit tries the whole song again")))))
+
+(deftest a-rejected-live-op-needs-no-resync
+  (with-open [server (ServerSocket. 0)]
+    (let [song (atom song/default-song)
+          {:keys [out] :as fake} (connect-to server song 7 0)]
+      (read-patch fake)
+      (wire/write-frame! out (wire/encode {:op :engine/rejected :epoch 1
+                                           :reason "late" :ops ["pattern/schedule-bar"]}))
+      (is (eventually #(some? @engine/last-rejection)))
+      (swap! song assoc-in [:patterns :drums :steps :hat 1] 1)
+      (is (= ["hat"] (rows (read-patch fake))) "just the edit, no snapshot"))))
+
+(deftest a-new-engine-gets-the-transport-back
+  (with-open [server (ServerSocket. 0)]
+    (let [song (atom song/default-song)
+          fake (connect-to server song 7 0)]
+      (read-patch fake)
+      (engine/set-playing! false)
+      (read-patch fake)
+      (engine/disconnect!)
+      (let [new-engine (connect-to server song 8 0)]
+        (read-patch new-engine)
+        (is (= [{:op :transport/set :playing false}] (:ops (read-patch new-engine))))))))
+
+(deftest relative-samples-resolve-against-the-samples-root
+  (with-open [server (ServerSocket. 0)]
+    (let [song (atom (assoc-in song/default-song [:channels :clap :gen]
+                               [:sampler {:sample "clap.wav"}]))
+          fake (connect-to server song 7 0)
+          clap (->> (:ops (read-patch fake))
+                    (filter #(= "clap" (:channel %)))
+                    first)]
+      (is (= (str (java.io.File. (System/getProperty "user.dir") "clap.wav"))
+             (get-in clap [:generator :sample]))))))
