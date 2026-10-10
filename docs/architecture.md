@@ -103,6 +103,7 @@ The engine never sees EDN. A watch on the song atom diffs old and new values and
 
 - **Wire format:** each message is a 4-byte big-endian length and a MessagePack map, at most 64 KiB. Ops are maps tagged by `:op` (a serde internally tagged enum). Keywords travel as strings holding their full name, so `:pattern/set-steps` is `"pattern/set-steps"`.
 - **Transport:** TCP on loopback, `127.0.0.1:7878` by default (`GORILLA_ENGINE_ADDR` overrides it). Chosen over Unix sockets because it works the same on macOS, Linux, Windows and the JVM. One brain connects at a time; the protocol has no authentication, so it must stay on loopback.
+- **Transport** (`{:op :transport/set :playing false}`) is engine state, not song data: it isn't saved, isn't undone and doesn't advance the epoch, so it's sent directly rather than through the differ. Stopping lets ringing voices decay; playing restarts at step 0.
 - **Rejection:** an envelope is applied whole or not at all. A bad payload is logged and skipped while the connection stays open; a bad length header drops the connection, since the stream can't be resynced.
 
 - Validated twice: malli in the brain, serde-parsed Rust types in the engine. Malformed input is rejected; current state stays untouched.

@@ -13,7 +13,11 @@
      [:op [:= :pattern/set-steps]]
      [:pattern :keyword]
      [:row :keyword]
-     [:steps [:vector {:min 16 :max 16} [:enum 0 1]]]]]])
+     [:steps [:vector {:min 16 :max 16} [:enum 0 1]]]]]
+   [:transport/set
+    [:map {:closed true}
+     [:op [:= :transport/set]]
+     [:playing :boolean]]]])
 
 (def Envelope
   [:map {:closed true}

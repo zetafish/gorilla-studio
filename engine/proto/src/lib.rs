@@ -42,6 +42,10 @@ pub enum Patch {
         row: String,
         steps: [Step; PATTERN_STEPS],
     },
+    /// Start or stop playback. Transport is engine state, not song data: it
+    /// isn't saved or undone, and it doesn't advance the epoch.
+    #[serde(rename = "transport/set")]
+    SetTransport { playing: bool },
 }
 
 /// One step: 0 (off) or 1 (on) on the wire.
@@ -138,7 +142,11 @@ pub fn malli_schema() -> String {
      [:op [:= :pattern/set-steps]]
      [:pattern :keyword]
      [:row :keyword]
-     [:steps [:vector {{:min {PATTERN_STEPS} :max {PATTERN_STEPS}}} [:enum 0 1]]]]]])
+     [:steps [:vector {{:min {PATTERN_STEPS} :max {PATTERN_STEPS}}} [:enum 0 1]]]]]
+   [:transport/set
+    [:map {{:closed true}}
+     [:op [:= :transport/set]]
+     [:playing :boolean]]]])
 
 (def Envelope
   [:map {{:closed true}}
@@ -190,6 +198,7 @@ mod tests {
     enum Wire {
         Str(&'static str),
         Int(u64),
+        Bool(bool),
         Ints(Vec<u8>),
         Maps(Vec<BTreeMap<&'static str, Wire>>),
     }
@@ -213,6 +222,23 @@ mod tests {
     fn decodes_what_the_brain_sends() {
         let bytes = brain_message("pattern/set-steps", hat_ints());
         assert_eq!(decode(&bytes), Ok(envelope()));
+    }
+
+    #[test]
+    fn decodes_transport() {
+        let op = BTreeMap::from([
+            ("op", Wire::Str("transport/set")),
+            ("playing", Wire::Bool(false)),
+        ]);
+        let msg = BTreeMap::from([("epoch", Wire::Int(7)), ("ops", Wire::Maps(vec![op]))]);
+        let bytes = rmp_serde::to_vec(&msg).unwrap_or_default();
+        assert_eq!(
+            decode(&bytes),
+            Ok(Envelope {
+                epoch: 7,
+                ops: vec![Patch::SetTransport { playing: false }],
+            })
+        );
     }
 
     #[test]

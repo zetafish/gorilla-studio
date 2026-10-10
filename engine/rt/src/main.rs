@@ -83,6 +83,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     // The stream stays alive as long as this thread holds it.
     let mut reported_errors = 0;
     let mut reported_epoch = 0;
+    let mut reported_playing = true;
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let errors = stream_errors.load(Ordering::Relaxed);
@@ -97,6 +98,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         if epoch != reported_epoch {
             eprintln!("gorilla-engine: playing song epoch {epoch}");
             reported_epoch = epoch;
+        }
+        let playing = status.playing.load(Ordering::Acquire);
+        if playing != reported_playing {
+            eprintln!(
+                "gorilla-engine: transport {}",
+                if playing { "playing" } else { "stopped" }
+            );
+            reported_playing = playing;
         }
     }
 }

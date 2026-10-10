@@ -7,7 +7,7 @@
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError};
 use rtrb::Producer;
@@ -18,10 +18,20 @@ use crate::seq::{Row, RtMsg, Steps};
 const DRUMS: &str = "drums";
 
 /// Engine state the control thread reports on.
-#[derive(Default)]
 pub struct Status {
     /// Epoch of the last envelope handed to the audio thread.
     pub epoch: AtomicU64,
+    /// Transport state last handed to the audio thread.
+    pub playing: AtomicBool,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            playing: AtomicBool::new(true),
+        }
+    }
 }
 
 /// Accepts one brain connection at a time, forever. A brain that disconnects
@@ -61,6 +71,11 @@ fn handle(mut stream: TcpStream, tx: &mut Producer<RtMsg>, status: &Status) -> i
         match apply(&payload, tx) {
             Ok(envelope) => {
                 status.epoch.store(envelope.epoch, Ordering::Release);
+                for op in &envelope.ops {
+                    if let Patch::SetTransport { playing } = op {
+                        status.playing.store(*playing, Ordering::Release);
+                    }
+                }
             }
             Err(err) => eprintln!("gorilla-engine: rejected patch: {err}"),
         }
@@ -108,6 +123,7 @@ fn translate(patch: &Patch) -> Result<RtMsg, String> {
             let steps: Steps = steps.map(|s| s.0);
             Ok(RtMsg::SetSteps { row, steps })
         }
+        Patch::SetTransport { playing } => Ok(RtMsg::Transport { playing: *playing }),
     }
 }
 
@@ -204,6 +220,23 @@ mod tests {
         assert!(send(addr, &frame(&set_steps("drums", "hat", 5))));
         assert!(wait_for_epoch(&status, 5));
         assert_eq!(rx.pop(), Ok(ALL_HATS));
+    }
+
+    #[test]
+    fn transport_reaches_the_audio_thread_and_status() {
+        let started = start();
+        assert!(started.is_some(), "could not start the control server");
+        let Some((addr, mut rx, status)) = started else {
+            return;
+        };
+        let stop = Envelope {
+            epoch: 4,
+            ops: vec![Patch::SetTransport { playing: false }],
+        };
+        assert!(send(addr, &frame(&stop)));
+        assert!(wait_for_epoch(&status, 4));
+        assert_eq!(rx.pop(), Ok(RtMsg::Transport { playing: false }));
+        assert!(!status.playing.load(Ordering::Acquire));
     }
 
     #[test]
