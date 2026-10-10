@@ -2,5 +2,9 @@
   (:require [clojure.test :refer [deftest is]]
             [gorilla.song :as song]))
 
-(deftest empty-song-is-a-map
-  (is (map? song/empty-song)))
+(deftest built-in-songs-are-valid
+  (is (song/valid? song/empty-song))
+  (is (song/valid? song/default-song)))
+
+(deftest rows-must-have-sixteen-steps
+  (is (not (song/valid? (assoc-in song/default-song [:patterns :drums :steps :hat] [1 0 1])))))

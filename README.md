@@ -19,6 +19,22 @@ Prove the two-process design end to end before building out the layout:
 
 Done when you can toggle hi-hat steps from the REPL with no audible glitch, and killing the brain process leaves the beat playing.
 
+Status: implemented. To try it:
+
+```sh
+cd engine && cargo run -p gorilla-rt     # plays the default beat, listens on 127.0.0.1:7878
+cd brain && clojure -M:nrepl             # in another terminal
+```
+
+Then, in the REPL (helpers live in `brain/dev/user.clj`):
+
+```clojure
+(start!)            ; connect and send the song
+(toggle! :hat 3)    ; heard on the next audio buffer
+(undo!)
+(stop!)             ; the engine keeps playing
+```
+
 ## Development
 
 The repo is colocated jj + git. After cloning, run `./scripts/setup-jj.sh` once; the workflow is in [`CLAUDE.md`](CLAUDE.md#version-control-jj-on-top-of-git).
