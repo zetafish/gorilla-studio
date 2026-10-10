@@ -1,11 +1,14 @@
 (ns user
-  "REPL helpers. Start the engine (`cargo run -p gorilla-rt` in engine/), then:
+  "REPL helpers.
 
-    (connect!)          ; connect and send the song
+    (connect!)          ; stay connected to the engine; starts it with
+                        ; `cargo run` if nothing is listening, restarts it if it dies
     (toggle! :hat 3)    ; toggle a step; the engine hears it on the next buffer
     (undo!) (redo!)
     (stop!) (play!)     ; transport; play restarts from the top
-    (disconnect!)       ; the engine keeps playing what it has
+    (playhead)          ; where the engine is: {:bar 12 :step 3 :playing true ...}
+    (disconnect!)       ; stop reconnecting; the engine keeps playing what it has
+    (stop-engine!)      ; end an engine that connect! started
     (reload!)           ; reload every changed namespace, in dependency order"
   (:require [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.track :as track]
@@ -22,13 +25,17 @@
       (require ns-sym :reload))
     order))
 
-(defn connect! [] (engine/connect! studio/song))
+(defn connect! [] (engine/auto-connect! studio/song {:launch true}))
 
-(defn disconnect! [] (engine/disconnect!))
+(defn disconnect! [] (engine/stop-auto-connect!))
+
+(defn stop-engine! [] (engine/stop-engine!))
 
 (defn play! [] (engine/set-playing! true) :playing)
 
 (defn stop! [] (engine/set-playing! false) :stopped)
+
+(defn playhead [] @engine/playhead)
 
 (defn toggle!
   ([row step] (toggle! :drums row step))

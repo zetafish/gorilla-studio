@@ -29,12 +29,18 @@ cd brain && clojure -M:nrepl             # in another terminal
 Then, in the REPL (helpers live in `brain/dev/user.clj`):
 
 ```clojure
-(connect!)          ; connect and send the song
+(connect!)          ; stay connected; starts the engine if needed, restarts it if it dies
 (toggle! :hat 3)    ; heard on the next audio buffer
 (undo!)
 (stop!) (play!)     ; transport; play restarts from the top
+(playhead)          ; {:bar 12 :step 3 :playing true :epoch 41 ...}
 (disconnect!)       ; the engine keeps playing what it has
+(reload!)           ; after code changes, keeps the song
 ```
+
+## Second milestone: the engine talks back
+
+Status: implemented. The engine says hello on connect (a random engine id and its epoch) and streams the playhead at about 60 Hz on the same socket. The brain uses the hello to send only what a reconnecting engine is missing, and `connect!` keeps the link up, restarting a crashed engine with `cargo run`.
 
 ## Development
 
