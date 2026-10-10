@@ -20,7 +20,9 @@
 
 (def ^:private tick-ms 50)
 
-(defonce ^{:doc "{[pattern row] {:f fn, :source string}}"} patterns (atom {}))
+(defonce ^{:doc "{[pattern row] {:f fn, :source string, :frozen bars-or-nil}}.
+  A frozen pattern replays saved bars instead of running code."}
+  patterns (atom {}))
 
 ;; --- Planning (pure) ----------------------------------------------------------
 
@@ -116,19 +118,44 @@
 
 ;; --- API ----------------------------------------------------------------------
 
+(defn- install! [pattern row entry]
+  (when-not (get-in @studio/song [:patterns pattern :steps row])
+    (throw (ex-info (str "No row " row " in pattern " pattern) {:pattern pattern :row row})))
+  (let [{:keys [error]} (render-bar (:f entry) 0)]
+    (when error
+      (throw (ex-info (str "Pattern fails on bar 0: " error) {:pattern pattern :row row}))))
+  (swap! patterns assoc [pattern row] entry)
+  (ensure-scheduler!)
+  (tick!)
+  [pattern row])
+
 (defn set-pattern!
   "Makes row `row` of `pattern` live: `f` takes a bar number and returns
   anything `gorilla.pattern/steps` accepts. Takes effect at the next bar."
   [pattern row f source]
-  (when-not (get-in @studio/song [:patterns pattern :steps row])
-    (throw (ex-info (str "No row " row " in pattern " pattern) {:pattern pattern :row row})))
-  (let [{:keys [error]} (render-bar f 0)]
-    (when error
-      (throw (ex-info (str "Pattern fails on bar 0: " error) {:pattern pattern :row row}))))
-  (swap! patterns assoc [pattern row] {:f f :source source})
-  (ensure-scheduler!)
-  (tick!)
-  [pattern row])
+  (install! pattern row {:f f :source source :frozen nil}))
+
+(defn- replay [bars]
+  (fn [bar] (nth bars (mod bar (count bars)))))
+
+(defn set-frozen!
+  "Makes a row live from saved `bars`, looping them. `source` is kept as text
+  and not run; `activate!` runs it."
+  [pattern row source bars]
+  (install! pattern row {:f (replay bars) :source source :frozen (vec bars)}))
+
+(defn materialize
+  "Every live pattern as data: its source and its first `n` bars (a frozen
+  pattern keeps the bars it has). For saving."
+  [n]
+  (into (sorted-map)
+        (map (fn [[k {:keys [f source frozen]}]]
+               [k {:source source
+                   :bars (or frozen
+                             (mapv #(or (:steps (render-bar f %))
+                                        (p/steps []))
+                                   (range n)))}]))
+        @patterns))
 
 (defmacro defpattern
   "(defpattern :hat (fn [bar] ...)) or (defpattern :drums :hat (fn [bar] ...))."
@@ -157,3 +184,9 @@
       (swap! state assoc :sent sent :bar 0
              :identity-key [(engine/engine-id) @engine/transport-starts])
       :playing)))
+
+(defn clear!
+  "Removes every live pattern."
+  []
+  (doseq [[pattern row] (keys @patterns)]
+    (remove-pattern! pattern row)))
