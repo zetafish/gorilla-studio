@@ -114,3 +114,25 @@
                                                   :live {[:drums :cowbell] {:source "" :bars [(p/steps "x")]}}}))))
     (is (= song/default-song @studio/song))
     (is (empty? @live/patterns))))
+
+(deftest activate-runs-saved-source-in-the-sandbox
+  (let [dir (temp-dir)
+        canary (io/file dir "canary")]
+    (spit (io/file dir "song.edn")
+          (file/->edn
+           {:format 1
+            :song song/default-song
+            :live {[:drums :hat] {:source "(fn [bar] (euclid (+ 3 (mod bar 4)) 16))"
+                                  :bars [(p/steps "x...")]}
+                   [:drums :kick] {:source (str "(fn [bar] (spit " (pr-str (str canary)) " 1) \"x\")")
+                                   :bars [(p/steps "x.......")]}
+                   [:drums :snare] {:source "(fn [bar] (future 1))" :bars [(p/steps "....x...")]}}}))
+    (file/open! dir)
+    (is (= (p/steps "x...") ((:f (get @live/patterns [:drums :hat])) 5)) "frozen until activated")
+    (let [{:keys [active failed]} (live/activate!)]
+      (is (= [[:drums :hat]] active))
+      (is (re-find #"spit" (get failed [:drums :kick])))
+      (is (re-find #"future" (get failed [:drums :snare]))))
+    (is (= (p/euclid 4 16) ((:f (get @live/patterns [:drums :hat])) 5)) "generating again")
+    (is (some? (:frozen (get @live/patterns [:drums :kick]))) "a failed pattern stays frozen")
+    (is (not (.exists canary)))))

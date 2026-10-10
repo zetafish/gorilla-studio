@@ -25,10 +25,17 @@
     (row! :pop \"....x.......x..x\")                       ; row :pop in :drums
     (row! :fills :pop \"xxxx............\")               ; another pattern
     (remove-row! :pop) (remove-channel! :pop)
-    (new-song!)         ; empty song, live patterns cleared (undo restores the song)"
+    (new-song!)         ; empty song, live patterns cleared (undo restores the song)
+
+  Songs on disk (a folder: song.edn plus assets/):
+
+    (save! \"songs/dnb\")  ; later just (save!)
+    (open! \"songs/dnb\")  ; live patterns come back frozen; nothing is evaluated
+    (activate!)          ; run their saved source again, in a sandbox"
   (:require [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.track :as track]
             [gorilla.engine :as engine]
+            [gorilla.file :as file]
             [gorilla.live :as live :refer [defpattern]]
             [gorilla.pattern :as pattern :refer [steps euclid rotate invert overlay mask chance every]]
             [gorilla.song]
@@ -77,6 +84,14 @@
    (doseq [[pattern row] (keys @live/patterns)]
      (live/remove-pattern! pattern row))
    (dispatch! {:cmd :song/replace :song song})))
+
+(defn save!
+  ([] (file/save!))
+  ([dir] (file/save! dir)))
+
+(defn open! [dir] (file/open! dir))
+
+(defn activate! [] (live/activate!))
 
 (defn bpm! [bpm] (dispatch! {:cmd :song/set-bpm :bpm bpm}))
 

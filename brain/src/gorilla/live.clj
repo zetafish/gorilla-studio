@@ -14,7 +14,8 @@
   own row back."
   (:require [gorilla.engine :as engine]
             [gorilla.pattern :as p]
-            [gorilla.studio :as studio]))
+            [gorilla.studio :as studio]
+            [sci.core :as sci]))
 
 (def lookahead-bars 2)
 
@@ -190,3 +191,43 @@
   []
   (doseq [[pattern row] (keys @patterns)]
     (remove-pattern! pattern row)))
+
+;; --- Running saved source -------------------------------------------------------
+
+(def sandbox-fns
+  "What saved pattern source can call, besides pure clojure.core."
+  {'steps p/steps 'euclid p/euclid 'rotate p/rotate 'invert p/invert
+   'overlay p/overlay 'mask p/mask 'chance p/chance 'every p/every})
+
+(def ^:private denied
+  "SCI already leaves out I/O and Java interop; these would let source reach
+  further, or run off on other threads."
+  '[eval load-string read-string require use import in-ns ns resolve intern
+    alter-var-root future future-call pmap pcalls agent send send-off
+    add-watch set-validator!])
+
+(defn compile-source
+  "Evaluates pattern `source` in a fresh SCI sandbox: pure clojure.core plus
+  `sandbox-fns`, no I/O, no Java. Returns the pattern function."
+  [source]
+  (let [ctx (sci/init {:namespaces {'user sandbox-fns} :deny denied})
+        f (sci/eval-string* ctx source)]
+    (when-not (fn? f)
+      (throw (ex-info "Source doesn't evaluate to a function" {:source source})))
+    f))
+
+(defn activate!
+  "Runs the saved source of every frozen live pattern, in the sandbox, so it
+  generates again instead of replaying saved bars. A pattern whose source
+  fails stays frozen. Returns {:active [...] :failed {[pattern row] reason}}."
+  []
+  (reduce (fn [acc [[pattern row] {:keys [source frozen]}]]
+            (if-not frozen
+              acc
+              (try
+                (set-pattern! pattern row (compile-source source) source)
+                (update acc :active conj [pattern row])
+                (catch Exception e
+                  (assoc-in acc [:failed [pattern row]] (ex-message e))))))
+          {:active [] :failed {}}
+          (sort-by key @patterns)))

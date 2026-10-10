@@ -21,8 +21,6 @@
 (defn- system-sound [name]
   [:sampler {:sample (str "/System/Library/Sounds/" name ".aiff")}])
 
-(def rest-bar (steps ""))
-
 ;; The static rows are what the engine plays before the live patterns take
 ;; over, and what keeps looping if the brain goes away: the drop.
 (def song
@@ -45,26 +43,26 @@
    :playlist []
    :mixer {}})
 
-(defn- intro? [bar] (< bar 8))
-(defn- quiet? [bar] (< bar 4))
-(defn- last-of [n bar] (= (dec n) (mod bar n)))
-
 (defn- live! []
+  ;; Each pattern uses only clojure.core and gorilla.pattern, so its saved
+  ;; source runs again in the sandbox after (gorilla.live/activate!).
+
   ;; Two-step kick; a busier fill on the last bar of every 8.
   (defpattern :drums :kick
     (fn [bar]
-      (if (last-of 8 bar)
+      (if (= 7 (mod bar 8))
         "x.x.......x.x.x."
         "x.........x.....")))
 
-  ;; Backbeat on 2 and 4, a roll into every 4th bar, a bigger one into the 8th.
+  ;; Backbeat on 2 and 4 from bar 4; a roll into every 4th bar, a bigger
+  ;; one into the 8th.
   (defpattern :drums :snare
     (fn [bar]
       (cond
-        (quiet? bar)    rest-bar
-        (last-of 8 bar) "....x...x.x.xxxx"
-        (last-of 4 bar) "....x.......x.xx"
-        :else           "....x.......x...")))
+        (< bar 4)            ""
+        (= 7 (mod bar 8))    "....x...x.x.xxxx"
+        (= 3 (mod bar 4))    "....x.......x.xx"
+        :else                "....x.......x...")))
 
   ;; Offbeat hats with a few extra sixteenths that change every bar.
   (defpattern :drums :hat
@@ -74,39 +72,36 @@
   ;; Ghost notes shuffle around the snare once it's in.
   (defpattern :perc :ghost
     (fn [bar]
-      (if (quiet? bar)
-        rest-bar
+      (if (< bar 4)
+        ""
         (overlay ".......x.x.....x" (chance 0.1 (+ 1000 bar))))))
 
-  ;; Bass follows the kick, with a pickup that alternates every bar.
+  ;; Bass from the drop, following the kick, with an alternating pickup.
   (defpattern :bass :bass
     (fn [bar]
       (cond
-        (intro? bar) rest-bar
-        (even? bar)  "x.........x..x.."
-        :else        "x.........x...x.")))
+        (< bar 8)   ""
+        (even? bar) "x.........x..x.."
+        :else       "x.........x...x.")))
 
   ;; A stab every other bar after the drop.
   (defpattern :fx :stab
     (fn [bar]
-      (if (intro? bar)
-        rest-bar
-        (every 2 bar "......x........." rest-bar))))
+      (if (< bar 8) "" (every 2 bar "......x........." ""))))
 
   ;; The atmosphere swells once every 8 bars.
   (defpattern :fx :atmos
     (fn [bar]
-      (every 8 bar "x..............." rest-bar))))
+      (every 8 bar "x..............." ""))))
 
 (defn start!
-  "Replaces the song with this one and, if the engine is connected, plays it
-  from bar 0. Clears any other live patterns first."
+  "Replaces the song with this one (undo brings the old one back) and, if the
+  engine is connected, plays it from bar 0. Clears other live patterns first."
   []
   (when-let [errors (song/explain song)]
     (throw (ex-info "songs.dnb/song is invalid" {:errors errors})))
-  (doseq [[pattern row] (keys @live/patterns)]
-    (live/remove-pattern! pattern row))
-  (studio/reset-song! song)
+  (live/clear!)
+  (studio/dispatch! {:cmd :song/replace :song song})
   (live!)
   (if (engine/connected?)
     (live/play!)

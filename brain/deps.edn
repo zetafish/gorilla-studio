@@ -1,7 +1,8 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.3"}
         metosin/malli {:mvn/version "0.20.3"}
-        org.msgpack/msgpack-core {:mvn/version "0.9.12"}}
+        org.msgpack/msgpack-core {:mvn/version "0.9.12"}
+        org.babashka/sci {:mvn/version "0.15.59"}}
  :aliases
  {;; :jvm-opts below: msgpack-core still uses sun.misc.Unsafe, which JDK 24+ warns about.
   :test {:extra-paths ["test" "test/resources"]
