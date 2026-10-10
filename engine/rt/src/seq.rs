@@ -3,6 +3,9 @@
 //! Everything here runs on the audio thread: fixed-size state, no allocation,
 //! no indexing on input-derived data.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 pub const STEPS: usize = 16;
 pub const ROW_COUNT: usize = 3;
 
@@ -47,18 +50,52 @@ pub const DEFAULT_PATTERN: [Steps; ROW_COUNT] = [
 
 const MASTER_GAIN: f32 = 0.6;
 
+/// What the audio thread is playing, for telemetry. Only the audio thread
+/// writes it; plain atomic stores, so publishing never blocks.
+pub struct Playhead {
+    /// Steps triggered since playback last started.
+    steps: AtomicU64,
+    playing: AtomicBool,
+}
+
+impl Default for Playhead {
+    fn default() -> Self {
+        Self {
+            steps: AtomicU64::new(0),
+            playing: AtomicBool::new(true),
+        }
+    }
+}
+
+impl Playhead {
+    pub fn playing(&self) -> bool {
+        self.playing.load(Ordering::Relaxed)
+    }
+
+    /// Bar and step of the most recently triggered step, counted from the
+    /// last start. Before the first step it reports bar 0, step 0.
+    pub fn position(&self) -> (u64, u8) {
+        let steps_per_bar = STEPS as u64;
+        let current = self.steps.load(Ordering::Relaxed).saturating_sub(1);
+        let step = u8::try_from(current % steps_per_bar).unwrap_or(0);
+        (current / steps_per_bar, step)
+    }
+}
+
 pub struct Sequencer {
     pattern: [Steps; ROW_COUNT],
     voices: [Voice; ROW_COUNT],
     samples_per_step: f64,
     samples_until_step: f64,
     step: usize,
+    steps_played: u64,
     playing: bool,
+    playhead: Arc<Playhead>,
     noise: Noise,
 }
 
 impl Sequencer {
-    pub fn new(sample_rate: f32, bpm: f32) -> Self {
+    pub fn new(sample_rate: f32, bpm: f32, playhead: Arc<Playhead>) -> Self {
         let sample_rate = sample_rate.max(1.0);
         let bpm = bpm.clamp(20.0, 999.0);
         Self {
@@ -68,7 +105,9 @@ impl Sequencer {
             samples_per_step: f64::from(sample_rate) * 60.0 / f64::from(bpm) / 4.0,
             samples_until_step: 0.0,
             step: 0,
+            steps_played: 0,
             playing: true,
+            playhead,
             noise: Noise::new(0x9E37_79B9),
         }
     }
@@ -84,8 +123,11 @@ impl Sequencer {
         if playing && !self.playing {
             self.step = 0;
             self.samples_until_step = 0.0;
+            self.steps_played = 0;
+            self.playhead.steps.store(0, Ordering::Relaxed);
         }
         self.playing = playing;
+        self.playhead.playing.store(playing, Ordering::Relaxed);
     }
 
     pub fn set_steps(&mut self, row: Row, steps: Steps) {
@@ -124,6 +166,10 @@ impl Sequencer {
             }
         }
         self.step = (step + 1) % STEPS;
+        self.steps_played = self.steps_played.saturating_add(1);
+        self.playhead
+            .steps
+            .store(self.steps_played, Ordering::Relaxed);
     }
 }
 
@@ -240,7 +286,7 @@ mod tests {
 
     #[test]
     fn default_pattern_is_audible_and_bounded() {
-        let mut seq = Sequencer::new(SR, 120.0);
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
         let out = render(&mut seq, SR as usize);
         assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
         assert!(peak(&out) > 0.1);
@@ -248,7 +294,7 @@ mod tests {
 
     #[test]
     fn empty_pattern_is_silent() {
-        let mut seq = Sequencer::new(SR, 120.0);
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
         for row in Row::ALL {
             seq.set_steps(row, [false; STEPS]);
         }
@@ -259,7 +305,7 @@ mod tests {
     fn steps_land_on_the_sample_grid() {
         // At 120 BPM a sixteenth is 6000 samples at 48 kHz. Only a hat on step 1
         // means silence for the first step and sound right after it.
-        let mut seq = Sequencer::new(SR, 120.0);
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
         let hat_on_one = [O, X, O, O, O, O, O, O, O, O, O, O, O, O, O, O];
         for row in Row::ALL {
             seq.set_steps(row, [false; STEPS]);
@@ -273,7 +319,7 @@ mod tests {
 
     #[test]
     fn apply_replaces_a_row() {
-        let mut seq = Sequencer::new(SR, 120.0);
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
         for row in Row::ALL {
             seq.apply(RtMsg::SetSteps {
                 row,
@@ -290,7 +336,7 @@ mod tests {
 
     #[test]
     fn stop_lets_voices_ring_out_then_goes_silent() {
-        let mut seq = Sequencer::new(SR, 120.0);
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
         render(&mut seq, 100);
         seq.apply(RtMsg::Transport { playing: false });
         // The kick's 0.25 s decay needs about 2.3 s to drop below the gate.
@@ -302,7 +348,7 @@ mod tests {
 
     #[test]
     fn play_restarts_from_step_zero() {
-        let mut seq = Sequencer::new(SR, 120.0);
+        let mut seq = Sequencer::new(SR, 120.0, Arc::default());
         seq.apply(RtMsg::Transport { playing: false });
         render(&mut seq, 2 * SR as usize);
         render(&mut seq, 1);
@@ -317,9 +363,26 @@ mod tests {
     }
 
     #[test]
+    fn playhead_follows_the_clock() {
+        let playhead = Arc::new(Playhead::default());
+        let mut seq = Sequencer::new(SR, 120.0, Arc::clone(&playhead));
+        assert_eq!(playhead.position(), (0, 0));
+        // 17 steps of 6000 samples: the 18th step (bar 1, step 1) has fired.
+        render(&mut seq, 17 * 6_000 + 1);
+        assert_eq!(playhead.position(), (1, 1));
+        seq.apply(RtMsg::Transport { playing: false });
+        render(&mut seq, 1);
+        assert!(!playhead.playing());
+        seq.apply(RtMsg::Transport { playing: true });
+        render(&mut seq, 1);
+        assert!(playhead.playing());
+        assert_eq!(playhead.position(), (0, 0));
+    }
+
+    #[test]
     fn odd_inputs_do_not_break_the_clock() {
         for (sr, bpm) in [(0.0, 120.0), (SR, 0.0), (SR, f32::MAX), (1.0, 1.0)] {
-            let mut seq = Sequencer::new(sr, bpm);
+            let mut seq = Sequencer::new(sr, bpm, Arc::default());
             assert!(render(&mut seq, 1_000).iter().all(|s| s.is_finite()));
         }
     }

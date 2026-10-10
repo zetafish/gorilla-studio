@@ -3,33 +3,48 @@
 //!
 //! The audio thread drains the ring buffer at the start of each buffer, so every
 //! patch lands on a buffer boundary. An envelope is applied whole or not at all.
+//!
+//! Each connection also gets a telemetry thread writing back to the brain: a
+//! hello first, then the playhead about 60 times a second.
 
-use std::io::{self, Read};
-use std::net::{TcpListener, TcpStream};
+use std::hash::{BuildHasher, Hasher};
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
-use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError};
+use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError, Telemetry};
 use rtrb::Producer;
 
-use crate::seq::{Row, RtMsg, Steps};
+use crate::seq::{Playhead, Row, RtMsg, Steps};
 
 /// The one pattern the engine knows until it plays real songs.
 const DRUMS: &str = "drums";
 
-/// Engine state the control thread reports on.
+/// About 60 Hz.
+const TELEMETRY_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Engine state the control and telemetry threads share.
 pub struct Status {
+    /// Random per engine process; lets the brain spot a restarted engine.
+    pub engine_id: u32,
     /// Epoch of the last envelope handed to the audio thread.
     pub epoch: AtomicU64,
-    /// Transport state last handed to the audio thread.
-    pub playing: AtomicBool,
+    /// Written by the audio thread.
+    pub playhead: Arc<Playhead>,
 }
 
-impl Default for Status {
-    fn default() -> Self {
+impl Status {
+    pub fn new(playhead: Arc<Playhead>) -> Self {
+        // RandomState is seeded randomly per process: enough for an instance id.
+        let random = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
         Self {
+            engine_id: (random >> 32) as u32,
             epoch: AtomicU64::new(0),
-            playing: AtomicBool::new(true),
+            playhead,
         }
     }
 }
@@ -54,7 +69,58 @@ pub fn serve(listener: TcpListener, mut tx: Producer<RtMsg>, status: Arc<Status>
     }
 }
 
-fn handle(mut stream: TcpStream, tx: &mut Producer<RtMsg>, status: &Status) -> io::Result<()> {
+fn handle(stream: TcpStream, tx: &mut Producer<RtMsg>, status: &Arc<Status>) -> io::Result<()> {
+    let writer = stream.try_clone()?;
+    let done = Arc::new(AtomicBool::new(false));
+    let telemetry = {
+        let status = Arc::clone(status);
+        let done = Arc::clone(&done);
+        std::thread::Builder::new()
+            .name("telemetry".into())
+            .spawn(move || send_telemetry(writer, &status, &done))?
+    };
+
+    let result = read_patches(&stream, tx, status);
+
+    done.store(true, Ordering::Release);
+    let _ = stream.shutdown(Shutdown::Both);
+    // A write error there just means the brain went away; the read side
+    // already reports how the connection ended.
+    let _ = telemetry.join();
+    result
+}
+
+/// Hello, then the playhead until the connection ends.
+fn send_telemetry(mut out: TcpStream, status: &Status, done: &AtomicBool) -> io::Result<()> {
+    let hello = Telemetry::Hello {
+        engine_id: status.engine_id,
+        epoch: status.epoch.load(Ordering::Acquire),
+    };
+    write_frame(&mut out, &hello)?;
+    while !done.load(Ordering::Acquire) {
+        let (bar, step) = status.playhead.position();
+        let playhead = Telemetry::Playhead {
+            epoch: status.epoch.load(Ordering::Acquire),
+            playing: status.playhead.playing(),
+            bar,
+            step,
+        };
+        write_frame(&mut out, &playhead)?;
+        std::thread::sleep(TELEMETRY_INTERVAL);
+    }
+    Ok(())
+}
+
+fn write_frame(out: &mut TcpStream, msg: &Telemetry) -> io::Result<()> {
+    let frame = gorilla_proto::encode_frame(msg).map_err(io::Error::other)?;
+    out.write_all(&frame)
+}
+
+fn read_patches(
+    mut stream: &TcpStream,
+    tx: &mut Producer<RtMsg>,
+    status: &Status,
+) -> io::Result<()> {
     loop {
         let mut header = [0; HEADER_BYTES];
         match stream.read_exact(&mut header) {
@@ -71,11 +137,6 @@ fn handle(mut stream: TcpStream, tx: &mut Producer<RtMsg>, status: &Status) -> i
         match apply(&payload, tx) {
             Ok(envelope) => {
                 status.epoch.store(envelope.epoch, Ordering::Release);
-                for op in &envelope.ops {
-                    if let Patch::SetTransport { playing } = op {
-                        status.playing.store(*playing, Ordering::Release);
-                    }
-                }
             }
             Err(err) => eprintln!("gorilla-engine: rejected patch: {err}"),
         }
@@ -158,7 +219,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().ok()?;
         let (tx, rx) = RingBuffer::new(8);
-        let status = Arc::new(Status::default());
+        let status = Arc::new(Status::new(Arc::default()));
         let server_status = Arc::clone(&status);
         std::thread::spawn(move || serve(listener, tx, server_status));
         Some((addr, rx, status))
@@ -236,7 +297,47 @@ mod tests {
         assert!(send(addr, &frame(&stop)));
         assert!(wait_for_epoch(&status, 4));
         assert_eq!(rx.pop(), Ok(RtMsg::Transport { playing: false }));
-        assert!(!status.playing.load(Ordering::Acquire));
+    }
+
+    fn read_telemetry(stream: &mut TcpStream) -> Option<Telemetry> {
+        let mut header = [0; HEADER_BYTES];
+        stream.read_exact(&mut header).ok()?;
+        let mut payload = vec![0; gorilla_proto::payload_len(header).ok()?];
+        stream.read_exact(&mut payload).ok()?;
+        gorilla_proto::decode_telemetry(&payload).ok()
+    }
+
+    #[test]
+    fn says_hello_then_streams_the_playhead() {
+        let started = start();
+        assert!(started.is_some(), "could not start the control server");
+        let Some((addr, _rx, status)) = started else {
+            return;
+        };
+        let stream = TcpStream::connect(addr);
+        assert!(stream.is_ok());
+        let Ok(mut stream) = stream else {
+            return;
+        };
+        assert_eq!(
+            read_telemetry(&mut stream),
+            Some(Telemetry::Hello {
+                engine_id: status.engine_id,
+                epoch: 0
+            })
+        );
+        assert!(
+            stream
+                .write_all(&frame(&set_steps("drums", "hat", 8)))
+                .is_ok()
+        );
+        let acked = (0..200).any(|_| {
+            matches!(
+                read_telemetry(&mut stream),
+                Some(Telemetry::Playhead { epoch: 8, .. })
+            )
+        });
+        assert!(acked, "playhead reports the applied epoch");
     }
 
     #[test]

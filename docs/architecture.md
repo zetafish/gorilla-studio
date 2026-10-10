@@ -104,6 +104,7 @@ The engine never sees EDN. A watch on the song atom diffs old and new values and
 - **Wire format:** each message is a 4-byte big-endian length and a MessagePack map, at most 64 KiB. Ops are maps tagged by `:op` (a serde internally tagged enum). Keywords travel as strings holding their full name, so `:pattern/set-steps` is `"pattern/set-steps"`.
 - **Transport:** TCP on loopback, `127.0.0.1:7878` by default (`GORILLA_ENGINE_ADDR` overrides it). Chosen over Unix sockets because it works the same on macOS, Linux, Windows and the JVM. One brain connects at a time; the protocol has no authentication, so it must stay on loopback.
 - **Transport** (`{:op :transport/set :playing false}`) is engine state, not song data: it isn't saved, isn't undone and doesn't advance the epoch, so it's sent directly rather than through the differ. Stopping lets ringing voices decay; playing restarts at step 0.
+- **Telemetry** comes back on the same socket, framed the same way: `{:op :engine/hello :engine-id 123 :epoch 41}` once per connection, then `{:op :engine/playhead :epoch 41 :playing true :bar 12 :step 3}` about 60 times a second. The engine id is random per engine process, so a reconnecting brain can tell whether the engine still holds the song it sent.
 - **Rejection:** an envelope is applied whole or not at all. A bad payload is logged and skipped while the connection stays open; a bad length header drops the connection, since the stream can't be resynced.
 
 - Validated twice: malli in the brain, serde-parsed Rust types in the engine. Malformed input is rejected; current state stays untouched.
@@ -121,7 +122,7 @@ At 128 samples and 48 kHz, each buffer must be ready in 2.67 ms. Missing one dea
 | Control | Receives patches, builds the next graph | Free to allocate. Hands over the finished graph with an atomic pointer swap |
 | Reclaim | Drops old graphs and buffers | Keeps deallocation off the real-time thread |
 | Disk streamer | Streams long audio files, fills the sample cache | Talks to the RT thread through lock-free ring buffers (`rtrb`) |
-| Telemetry | Meters, playhead, scopes, spectra to the brain at ~60 Hz | Shared memory; the RT thread only writes |
+| Telemetry | Meters, playhead, scopes, spectra to the brain at ~60 Hz | The RT thread only writes atomics (`Playhead`); a telemetry thread per connection reads them and writes frames back on the brain's socket. Shared memory once scopes and spectra need the bandwidth |
 | Plugin sandboxes | One OS process per third-party plugin | Audio through shared memory with semaphores. A crash takes out only that slot |
 
 - **Graph swaps:** the audio thread always runs one immutable graph; a new one appears between buffers.

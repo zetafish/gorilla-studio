@@ -48,6 +48,29 @@ pub enum Patch {
     SetTransport { playing: bool },
 }
 
+/// Messages from the engine to the brain, framed like patches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", deny_unknown_fields)]
+pub enum Telemetry {
+    /// First message on every connection. `engine-id` is random per engine
+    /// process, so the brain can tell a restarted engine from the one it left.
+    #[serde(rename = "engine/hello")]
+    Hello {
+        #[serde(rename = "engine-id")]
+        engine_id: u32,
+        epoch: u64,
+    },
+    /// Where playback is, about 60 times a second. `epoch` is the last song
+    /// version the engine applied.
+    #[serde(rename = "engine/playhead")]
+    Playhead {
+        epoch: u64,
+        playing: bool,
+        bar: u64,
+        step: u8,
+    },
+}
+
 /// One step: 0 (off) or 1 (on) on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
@@ -101,18 +124,27 @@ pub fn payload_len(header: [u8; HEADER_BYTES]) -> Result<usize, ProtoError> {
     Ok(len)
 }
 
-/// Decodes a frame payload (without its header).
+/// Decodes a patch frame payload (without its header).
 pub fn decode(payload: &[u8]) -> Result<Envelope, ProtoError> {
+    decode_as(payload)
+}
+
+/// Decodes a telemetry frame payload (without its header).
+pub fn decode_telemetry(payload: &[u8]) -> Result<Telemetry, ProtoError> {
+    decode_as(payload)
+}
+
+fn decode_as<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, ProtoError> {
     if payload.len() > MAX_FRAME_BYTES {
         return Err(ProtoError::FrameTooLarge(payload.len()));
     }
     rmp_serde::from_slice(payload).map_err(|e| ProtoError::Decode(e.to_string()))
 }
 
-/// Encodes an envelope as a complete frame, header included.
-pub fn encode_frame(envelope: &Envelope) -> Result<Vec<u8>, ProtoError> {
+/// Encodes an envelope or telemetry message as a complete frame, header included.
+pub fn encode_frame<T: Serialize>(message: &T) -> Result<Vec<u8>, ProtoError> {
     let payload =
-        rmp_serde::to_vec_named(envelope).map_err(|e| ProtoError::Encode(e.to_string()))?;
+        rmp_serde::to_vec_named(message).map_err(|e| ProtoError::Encode(e.to_string()))?;
     if payload.len() > MAX_FRAME_BYTES {
         return Err(ProtoError::FrameTooLarge(payload.len()));
     }
@@ -152,7 +184,24 @@ pub fn malli_schema() -> String {
   [:map {{:closed true}}
    [:epoch [:int {{:min 0}}]]
    [:ops [:vector Patch]]])
-"#
+
+(def Telemetry
+  [:multi {{:dispatch :op}}
+   [:engine/hello
+    [:map {{:closed true}}
+     [:op [:= :engine/hello]]
+     [:engine-id [:int {{:min 0 :max {u32_max}}}]]
+     [:epoch [:int {{:min 0}}]]]]
+   [:engine/playhead
+    [:map {{:closed true}}
+     [:op [:= :engine/playhead]]
+     [:epoch [:int {{:min 0}}]]
+     [:playing :boolean]
+     [:bar [:int {{:min 0}}]]
+     [:step [:int {{:min 0 :max {last_step}}}]]]]])
+"#,
+        u32_max = u32::MAX,
+        last_step = PATTERN_STEPS - 1,
     )
 }
 
@@ -239,6 +288,25 @@ mod tests {
                 ops: vec![Patch::SetTransport { playing: false }],
             })
         );
+    }
+
+    #[test]
+    fn telemetry_round_trips() {
+        for msg in [
+            Telemetry::Hello {
+                engine_id: u32::MAX,
+                epoch: 3,
+            },
+            Telemetry::Playhead {
+                epoch: 3,
+                playing: false,
+                bar: 12,
+                step: 15,
+            },
+        ] {
+            let frame = encode_frame(&msg).unwrap_or_default();
+            assert_eq!(decode_telemetry(payload(&frame)), Ok(msg));
+        }
     }
 
     #[test]

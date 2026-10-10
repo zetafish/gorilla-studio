@@ -15,7 +15,7 @@ use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
 use rtrb::{Consumer, RingBuffer};
 
 use control::Status;
-use seq::{RtMsg, Sequencer};
+use seq::{Playhead, RtMsg, Sequencer};
 
 /// Aborts on any allocation inside `assert_no_alloc` in debug builds, which is
 /// where the audio callback runs.
@@ -59,12 +59,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     let stream_errors = Arc::new(AtomicU64::new(0));
+    let playhead = Arc::new(Playhead::default());
+    let rt = Rt {
+        rx,
+        playhead: Arc::clone(&playhead),
+        errors: Arc::clone(&stream_errors),
+    };
     let stream = match format {
-        SampleFormat::F32 => build::<f32>(&device, &config, rx, &stream_errors)?,
-        SampleFormat::F64 => build::<f64>(&device, &config, rx, &stream_errors)?,
-        SampleFormat::I16 => build::<i16>(&device, &config, rx, &stream_errors)?,
-        SampleFormat::I32 => build::<i32>(&device, &config, rx, &stream_errors)?,
-        SampleFormat::U16 => build::<u16>(&device, &config, rx, &stream_errors)?,
+        SampleFormat::F32 => build::<f32>(&device, &config, rt)?,
+        SampleFormat::F64 => build::<f64>(&device, &config, rt)?,
+        SampleFormat::I16 => build::<i16>(&device, &config, rt)?,
+        SampleFormat::I32 => build::<i32>(&device, &config, rt)?,
+        SampleFormat::U16 => build::<u16>(&device, &config, rt)?,
         other => return Err(format!("unsupported sample format {other}").into()),
     };
     stream.play()?;
@@ -73,7 +79,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         config.sample_rate, config.channels
     );
 
-    let status = Arc::new(Status::default());
+    let status = Arc::new(Status::new(playhead));
     let control_status = Arc::clone(&status);
     std::thread::Builder::new()
         .name("control".into())
@@ -99,7 +105,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             eprintln!("gorilla-engine: playing song epoch {epoch}");
             reported_epoch = epoch;
         }
-        let playing = status.playing.load(Ordering::Acquire);
+        let playing = status.playhead.playing();
         if playing != reported_playing {
             eprintln!(
                 "gorilla-engine: transport {}",
@@ -110,18 +116,24 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn build<T>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    mut rx: Consumer<RtMsg>,
-    stream_errors: &Arc<AtomicU64>,
-) -> Result<Stream, Box<dyn Error>>
+/// What the audio callback owns or shares.
+struct Rt {
+    rx: Consumer<RtMsg>,
+    playhead: Arc<Playhead>,
+    errors: Arc<AtomicU64>,
+}
+
+fn build<T>(device: &cpal::Device, config: &StreamConfig, rt: Rt) -> Result<Stream, Box<dyn Error>>
 where
     T: SizedSample + FromSample<f32>,
 {
+    let Rt {
+        mut rx,
+        playhead,
+        errors,
+    } = rt;
     let channels = usize::from(config.channels);
-    let mut seq = Sequencer::new(config.sample_rate as f32, BPM);
-    let errors = Arc::clone(stream_errors);
+    let mut seq = Sequencer::new(config.sample_rate as f32, BPM, playhead);
 
     let stream = device.build_output_stream(
         *config,
