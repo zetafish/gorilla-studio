@@ -29,10 +29,11 @@ cd brain && clojure -M:nrepl             # in another terminal
 Then, in the REPL (helpers live in `brain/dev/user.clj`):
 
 ```clojure
-(start!)            ; connect and send the song
+(connect!)          ; connect and send the song
 (toggle! :hat 3)    ; heard on the next audio buffer
 (undo!)
-(stop!)             ; the engine keeps playing
+(stop!) (play!)     ; transport; play restarts from the top
+(disconnect!)       ; the engine keeps playing what it has
 ```
 
 ## Development

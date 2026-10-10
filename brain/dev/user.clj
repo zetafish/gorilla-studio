@@ -1,16 +1,21 @@
 (ns user
   "REPL helpers. Start the engine (`cargo run -p gorilla-rt` in engine/), then:
 
-    (start!)            ; connect and send the song
+    (connect!)          ; connect and send the song
     (toggle! :hat 3)    ; toggle a step; the engine hears it on the next buffer
     (undo!) (redo!)
-    (stop!)             ; disconnect; the engine keeps playing"
+    (stop!) (play!)     ; transport; play restarts from the top
+    (disconnect!)       ; the engine keeps playing what it has"
   (:require [gorilla.engine :as engine]
             [gorilla.studio :as studio]))
 
-(defn start! [] (engine/connect! studio/song))
+(defn connect! [] (engine/connect! studio/song))
 
-(defn stop! [] (engine/disconnect!))
+(defn disconnect! [] (engine/disconnect!))
+
+(defn play! [] (engine/set-playing! true) :playing)
+
+(defn stop! [] (engine/set-playing! false) :stopped)
 
 (defn toggle!
   ([row step] (toggle! :drums row step))

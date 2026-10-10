@@ -15,6 +15,7 @@
     (.isArrayValue v) (mapv value->clj (.list (.asArrayValue v)))
     (.isStringValue v) (.asString (.asStringValue v))
     (.isIntegerValue v) (.asLong (.asIntegerValue v))
+    (.isBooleanValue v) (.getBoolean (.asBooleanValue v))
     :else (str v)))
 
 (defn- unpack [^bytes payload]
@@ -58,3 +59,25 @@
         (finally
           (engine/disconnect!)
           (.close conn))))))
+
+(deftest transport-keeps-the-epoch-and-leaves-the-song-alone
+  (with-open [server (ServerSocket. 0)]
+    (let [song (atom song/default-song)
+          _ (future (engine/connect! song {:port (.getLocalPort server)}))
+          conn (.accept server)
+          in (DataInputStream. (.getInputStream conn))
+          snapshot (read-frame in)]
+      (try
+        (engine/set-playing! false)
+        (is (= {"epoch" (get snapshot "epoch")
+                "ops" [{"op" "transport/set" "playing" false}]}
+               (read-frame in)))
+        (is (= song/default-song @song))
+        (finally
+          (engine/disconnect!)
+          (.close conn))))))
+
+(deftest transport-needs-a-connection
+  (engine/disconnect!)
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Not connected"
+                        (engine/set-playing! true))))

@@ -58,16 +58,34 @@
 
 (defn connected? [] (some? @link))
 
-(defn- send-ops! [ops]
+(defn- send-envelope!
+  "Sends one envelope. Returns true if it was written."
+  [envelope]
+  (when-let [{:keys [^OutputStream out]} @link]
+    (let [bytes (frame envelope)]
+      (try
+        (.write out bytes)
+        (.flush out)
+        true
+        (catch java.io.IOException e
+          (println "gorilla.engine: lost the engine:" (.getMessage e))
+          (reset! link nil)
+          false)))))
+
+(defn- send-ops!
+  "Sends song patches as the next epoch."
+  [ops]
   (when (seq ops)
-    (when-let [{:keys [^OutputStream out]} @link]
-      (let [bytes (frame {:epoch (swap! epoch inc) :ops ops})]
-        (try
-          (.write out bytes)
-          (.flush out)
-          (catch java.io.IOException e
-            (println "gorilla.engine: lost the engine:" (.getMessage e))
-            (reset! link nil)))))))
+    (send-envelope! {:epoch (swap! epoch inc) :ops ops})))
+
+(defn set-playing!
+  "Starts (from the top) or stops the engine's transport. Transport isn't song
+  data, so it doesn't touch the song, undo history or epoch."
+  [playing?]
+  (when-not (connected?)
+    (throw (ex-info "Not connected to the engine" {})))
+  (send-envelope! {:epoch @epoch
+                   :ops [{:op :transport/set :playing (boolean playing?)}]}))
 
 (defn disconnect!
   "Closes the link. The engine keeps playing what it has."
