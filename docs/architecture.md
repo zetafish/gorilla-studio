@@ -171,9 +171,9 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
 | GC pause or namespace reload | Nothing audible; the engine plays from its own copy |
 | Brain loses the link, engine keeps running | On reconnect the hello's engine id and epoch match what the brain last sent, so it sends only the changes made meanwhile |
 | Brain crashes | Music keeps playing. The new brain reads the engine's hello (engine id, epoch) and sends a full snapshot; epochs continue from the engine's |
-| Engine crashes | The brain's telemetry reader notices, `auto-connect!` restarts the engine (`cargo run` for now) and sends the full song. Playback restarts from the top, and transport state isn't restored yet |
+| Engine crashes | The brain's telemetry reader notices, `auto-connect!` restarts the engine (`cargo run` for now) and sends the full song and the transport state. Playback restarts from the top |
 | Plugin crashes | Only its sandbox dies; slot bypassed, user notified, plugin reloadable |
-| Bad patch or invalid song | Rejected by malli, then serde; current state untouched |
+| Bad patch or invalid song | Rejected by malli, then serde and the engine's own checks (unknown rows, unreadable samples, tempo range); current state untouched. The engine reports `:engine/rejected`; for song changes the brain resends the whole song once, and if that is refused too it waits for the next edit |
 | Missed buffer deadline | Logged with the slow part of the graph; shown in a per-track CPU meter |
 
 ## 8. Targets

@@ -13,8 +13,8 @@ When a milestone finishes or a gap is closed, update this file in the same chang
 | 1 | The vertical slice | Done |
 | 2 | The engine talks back | Done |
 | 3 | Live patterns | Done |
-| 4 | The song drives the engine | **Next** |
-| 5 | Save and load | Planned |
+| 4 | The song drives the engine | Done, pending your listening test |
+| 5 | Save and load | **Next** |
 | 6 | Melody and arrangement | Planned |
 | 7 | Mixer and effects | Planned |
 | 8 | Desktop UI | Planned |
@@ -56,22 +56,20 @@ Prove the two-process design end to end.
 
 **Done when:** a pattern that varies every bar plays in time; redefining it lands on the next bar line; `play!` starts with live rows in place.
 
-## Next
-
 ### 4. The song drives the engine
 
-Today the engine knows one pattern (`:drums`) with three built-in voices at a fixed 120 BPM. After this milestone, the engine plays whatever the song describes.
-
-- **Tempo:** `:song/bpm` reaches the engine as a patch (`:song/set-bpm` command). Changing it mid-play keeps the bar position, without a jump or click.
-- **Any patterns and rows:** the engine stops hard-coding `drums/kick/snare/hat`. Patterns and rows in the song become engine state built on the control thread.
-- **Channels and generators:** each row plays a channel; a channel has a generator, either `[:sampler {:sample "kick.wav"}]` or a built-in synth (today's drum voices become built-ins).
-- **Sample playback:** decode with `symphonia` into a sample cache, off the audio thread.
-- **Graph swaps:** adding or removing channels builds a new graph on the control thread and swaps it in at a buffer boundary; a reclaim thread drops the old one. The first real use of the design in [architecture §4](architecture.md#4-engine-threads-and-the-real-time-rules).
-- **Close gaps:** transport restored after an engine restart; the engine reports rejected patches so the brain can resync; schema generation scales to many patch types.
+- **Channels:** the song has `:channels`, each with a generator: `[:builtin {:voice :kick}]` or `[:sampler {:sample "/path/clap.wav"}]`. A row plays the channel with the same id, as in a channel rack.
+- **Any patterns and rows:** the engine keeps a model of the song on the control thread and builds a graph of channels and patterns from it. Every pattern loops at the same time until the playlist exists (milestone 6).
+- **Graph swaps:** a change of shape builds a new graph and sends it down the audio queue; voices, steps and queued bars carry over by id, and a reclaim thread drops the old graph.
+- **Samples:** decoded with `symphonia` (WAV, AIFF, FLAC) on the control thread, mixed to mono and played with linear-interpolation resampling. Relative paths resolve against `gorilla.engine/samples-root`.
+- **Tempo:** `:song/bpm` reaches the engine; a change keeps the position within the step.
+- **Snapshots** start with `:song/reset`, so a new engine ends up with exactly the brain's song, including transport state.
+- **Rejections:** the engine reports `:engine/rejected` with the op names. A rejected song change makes the brain resend the whole song once; a rejected live op is only logged.
+- **Cross-check:** one encoded example per patch type, golden-tested in Rust, validated against the malli schema in a brain test.
 
 **Done when:** a song with two patterns and sample-based rows plays at song tempo; adding a channel while playing makes no click; changing BPM mid-play keeps the groove; a rejected patch shows up in the brain.
 
-## Planned
+## Next
 
 ### 5. Save and load
 
@@ -80,6 +78,8 @@ Today the engine knows one pattern (`:drums`) with three built-in voices at a fi
 - In-song expressions run in SCI with no I/O.
 
 **Done when:** save, quit both processes, open again, and it sounds the same; a file with live-pattern source opens without running it; the file diffs cleanly in git.
+
+## Planned
 
 ### 6. Melody and arrangement
 
@@ -139,11 +139,12 @@ Things that work but aren't finished, with the milestone that should close each 
 
 | Gap | Why it matters | Close in |
 |---|---|---|
-| A restarted engine always starts playing; transport state isn't restored | After a crash it plays even if you had stopped | 4 |
-| The brain assumes the engine applied everything it sent | A rejected patch (e.g. an unknown pattern) leaves the two sides out of sync, silently | 4 |
-| The engine only knows `:drums` with kick, snare and hat; a snapshot with any other pattern is rejected whole | Blocks real songs | 4 |
-| Tempo is fixed at 120 BPM; `:song/bpm` isn't sent | | 4 |
-| The malli schema is rendered by hand in `gorilla_proto::malli_schema()` | Fine for four patch types; won't scale | 4 |
+| The malli schema is rendered by hand in `gorilla_proto::malli_schema()` | The examples cross-check catches drift in field names and types, but a derive (or `schemars`) would remove the hand-written half | Any |
+| Every pattern loops at once | There's no arrangement yet | 6 |
+| A retriggered sample restarts without a fade | Can click on long samples | 7 |
+| Decoded samples are never evicted from the cache | Memory grows if you swap through many samples | 7 |
+| The engine starts at 120 BPM until a brain sends the song | Only matters before the first connect | Any |
+| `symphonia` is MPL-2.0 | Not banned (file-level copyleft), but not MIT/Apache either; `hound` (Apache-2.0) covers WAV if that ever matters | Any |
 | Live patterns exist only in the REPL session | Lost on restart | 5 |
 | A slow live pattern delays the others (they share the scheduler thread) | Two bars of lookahead hide it for now | 6 |
 | Telemetry is a socket stream, not shared memory | Enough for the playhead; maybe not for scopes and spectra | 7 |

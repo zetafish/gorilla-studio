@@ -11,7 +11,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the design, [`docs/roadma
 
 ## Status
 
-Milestones 1–3 are done: the two-process slice, telemetry with resync, and live patterns. Next is milestone 4, where the song drives the engine (tempo, any patterns, samples). Details in the [roadmap](docs/roadmap.md).
+Milestones 1–4 are built: the two-process slice, telemetry with resync, live patterns, and an engine driven by the song (channels, samples, tempo, graph swaps). Next is milestone 5, save and load. Details in the [roadmap](docs/roadmap.md).
 
 ## Try it
 
@@ -33,6 +33,13 @@ Then, in the REPL (helpers live in `brain/dev/user.clj`):
 (defpattern :snare (fn [bar] (overlay "....x.......x..." (chance 0.15 bar))))
 (patterns)          ; what's live, with source
 (unpattern :hat)    ; back to the song's row
+
+(bpm! 96)
+(channel! :pop "/System/Library/Sounds/Pop.aiff")   ; a sampler channel
+(row! :pop "....x.......x..x")                       ; a row playing it, in :drums
+(row! :fills :pop "xxxx............")               ; a second pattern, looping too
+(remove-channel! :pop)
+(rejection)         ; the engine's last refusal, if any
 
 (disconnect!)       ; the engine keeps playing what it has
 (reload!)           ; after code changes, keeps the song
