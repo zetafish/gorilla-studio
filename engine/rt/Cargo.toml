@@ -11,7 +11,10 @@ name = "gorilla-engine"
 path = "src/main.rs"
 
 [dependencies]
+assert_no_alloc = "1.1"
+cpal = "0.18"
 gorilla-proto = { path = "../proto" }
+rtrb = "0.4"
 
 [lints]
 workspace = true
