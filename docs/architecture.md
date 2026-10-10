@@ -71,7 +71,7 @@ Song changes flow down as validated **patches**; meters, playhead and scopes flo
          2 {:vol 0.7 :fx [[:reverb {:size 0.8}]]}}}
 ```
 
-- **Saving:** the song file is this value written out, plus an `assets/` folder. Diffable and mergeable in git; readable by agents.
+- **Saving:** a song is a folder: `song.edn` holds `{:format 1 :song <this value> :live {...}}` and `assets/` holds a copy of every sample, referenced by relative path. The EDN is written in a fixed layout (sorted keys, one row per line) so it diffs and merges cleanly in git; saving twice gives identical bytes. Opening reads it with `clojure.edn` (no eval, no reader tags) and validates it before anything changes. `gorilla.file` has `save!` and `open!`.
 - **Undo:** `(swap! history conj @song)`. Structural sharing keeps every version cheap.
 - **Validation:** one malli schema for the whole song. Every command's result is checked before it's committed.
 
@@ -155,8 +155,8 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
 - **Live output is not song data.** Earlier drafts wrote each generated bar into the song value. That would push a new song onto the undo history every bar and make the differ resend rows constantly, so generated bars go straight to the engine instead, like transport. The song keeps its own static rows; removing a live pattern sends the song's row back.
 - **Quantized edits:** redefining a pattern re-sends the bars already queued, so the change lands on the next bar line.
 - **Starting playback** sends the transport op and the first bars in one envelope, so live rows are right from bar 0.
-- **Safe files** (not built yet): live patterns will be saved as materialized output, with source kept as a string (`defpattern` already records it). Songs open without evaluating code.
-- **Expressions** inside the song run in SCI (sandboxed, no I/O).
+- **Safe files:** each live pattern is saved as its source string plus 16 materialized bars. Opening evaluates nothing: live rows come back frozen and loop their saved bars. `(gorilla.live/activate!)` runs the saved source again in SCI, with pure `clojure.core` plus the `gorilla.pattern` generators, no I/O, no Java interop, no threads; a pattern whose source fails stays frozen.
+- **Expressions** inside the song run in SCI (sandboxed, no I/O). So far that means live pattern source; anything else that runs from a file will use the same sandbox.
 
 ## 6. UI = f(song)
 

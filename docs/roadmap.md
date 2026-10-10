@@ -13,9 +13,9 @@ When a milestone finishes or a gap is closed, update this file in the same chang
 | 1 | The vertical slice | Done |
 | 2 | The engine talks back | Done |
 | 3 | Live patterns | Done |
-| 4 | The song drives the engine | Done, pending your listening test |
-| 5 | Save and load | **Next** |
-| 6 | Melody and arrangement | Planned |
+| 4 | The song drives the engine | Done |
+| 5 | Save and load | Done |
+| 6 | Melody and arrangement | **Next** |
 | 7 | Mixer and effects | Planned |
 | 8 | Desktop UI | Planned |
 | 9 | Agent access (MCP) | Planned |
@@ -69,17 +69,17 @@ Prove the two-process design end to end.
 
 **Done when:** a song with two patterns and sample-based rows plays at song tempo; adding a channel while playing makes no click; changing BPM mid-play keeps the groove; a rejected patch shows up in the brain.
 
-## Next
-
 ### 5. Save and load
 
-- A song file: the song value written out as EDN, plus an `assets/` folder for samples.
-- Live patterns saved as materialized output, with their source kept as a string (`defpattern` already records it). Opening a song never evaluates code.
-- In-song expressions run in SCI with no I/O.
+- A song is a folder: `song.edn` (the song value, plus live patterns) and `assets/` with a copy of every sample; paths in the file are relative. `(save! "dir")`, `(open! "dir")`.
+- `song.edn` is written in a fixed layout so it diffs cleanly; saving twice gives identical bytes.
+- Live patterns are saved as source text plus 16 materialized bars. Opening evaluates nothing: they come back frozen, looping their saved bars.
+- `(activate!)` runs saved source again in an SCI sandbox: pure `clojure.core` plus the pattern generators, no I/O, no interop, no threads.
+- `:song/replace` is an undoable, validated command; `(new-song!)` starts empty.
 
 **Done when:** save, quit both processes, open again, and it sounds the same; a file with live-pattern source opens without running it; the file diffs cleanly in git.
 
-## Planned
+## Next
 
 ### 6. Melody and arrangement
 
@@ -89,6 +89,8 @@ Prove the two-process design end to end.
 - Live patterns run with a time budget, so a slow pattern can't hold up the others.
 
 **Done when:** a live melodic pattern plays in key over a drum loop; an arrangement of several patterns plays start to finish.
+
+## Planned
 
 ### 7. Mixer and effects
 
@@ -145,8 +147,9 @@ Things that work but aren't finished, with the milestone that should close each 
 | Decoded samples are never evicted from the cache | Memory grows if you swap through many samples | 7 |
 | The engine starts at 120 BPM until a brain sends the song | Only matters before the first connect | Any |
 | `symphonia` is MPL-2.0 | Not banned (file-level copyleft), but not MIT/Apache either; `hound` (Apache-2.0) covers WAV if that ever matters | Any |
-| Live patterns exist only in the REPL session | Lost on restart | 5 |
-| A slow live pattern delays the others (they share the scheduler thread) | Two bars of lookahead hide it for now | 6 |
+| A slow live pattern delays the others (they share the scheduler thread), and sandboxed source has no time limit either | Two bars of lookahead hide it for now; an endless loop in activated source would stall the scheduler | 6 |
+| Undo restores the song but not live patterns | `new-song!` or `open!` then undo brings back the rows, not the patterns that played them | 6 |
+| A frozen pattern loops only its first 16 saved bars | An 8-bar intro replays every 16 bars until you `activate!` | 6 |
 | Telemetry is a socket stream, not shared memory | Enough for the playhead; maybe not for scopes and spectra | 7 |
 | Auto-restart runs `cargo run` from `../engine` | Works only from a dev checkout | 8 |
 | `msgpack-core` needs `--sun-misc-unsafe-memory-access=allow` on JDK 24+ | A future JDK may remove the API; a small built-in encoder would drop the dependency | Any |
