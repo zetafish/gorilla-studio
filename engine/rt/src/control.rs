@@ -12,9 +12,10 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use gorilla_proto::{Envelope, HEADER_BYTES, Patch, ProtoError, Telemetry};
+use gorilla_proto::{Envelope, HEADER_BYTES, Patch, Telemetry};
 use rtrb::Producer;
 
 use crate::graph::Steps;
@@ -72,15 +73,16 @@ pub fn serve(listener: TcpListener, mut control: Control, status: Arc<Status>) {
 fn handle(stream: TcpStream, control: &mut Control, status: &Arc<Status>) -> io::Result<()> {
     let writer = stream.try_clone()?;
     let done = Arc::new(AtomicBool::new(false));
+    let (rejections, rejected) = mpsc::channel();
     let telemetry = {
         let status = Arc::clone(status);
         let done = Arc::clone(&done);
         std::thread::Builder::new()
             .name("telemetry".into())
-            .spawn(move || send_telemetry(writer, &status, &done))?
+            .spawn(move || send_telemetry(writer, &status, &done, &rejected))?
     };
 
-    let result = read_patches(&stream, control, status);
+    let result = read_patches(&stream, control, status, &rejections);
 
     done.store(true, Ordering::Release);
     let _ = stream.shutdown(Shutdown::Both);
@@ -91,13 +93,21 @@ fn handle(stream: TcpStream, control: &mut Control, status: &Arc<Status>) -> io:
 }
 
 /// Hello, then the playhead until the connection ends.
-fn send_telemetry(mut out: TcpStream, status: &Status, done: &AtomicBool) -> io::Result<()> {
+fn send_telemetry(
+    mut out: TcpStream,
+    status: &Status,
+    done: &AtomicBool,
+    rejected: &Receiver<Telemetry>,
+) -> io::Result<()> {
     let hello = Telemetry::Hello {
         engine_id: status.engine_id,
         epoch: status.epoch.load(Ordering::Acquire),
     };
     write_frame(&mut out, &hello)?;
     while !done.load(Ordering::Acquire) {
+        while let Ok(rejection) = rejected.try_recv() {
+            write_frame(&mut out, &rejection)?;
+        }
         let (bar, step) = status.playhead.position();
         let playhead = Telemetry::Playhead {
             epoch: status.epoch.load(Ordering::Acquire),
@@ -116,7 +126,12 @@ fn write_frame(out: &mut TcpStream, msg: &Telemetry) -> io::Result<()> {
     out.write_all(&frame)
 }
 
-fn read_patches(mut stream: &TcpStream, control: &mut Control, status: &Status) -> io::Result<()> {
+fn read_patches(
+    mut stream: &TcpStream,
+    control: &mut Control,
+    status: &Status,
+    rejections: &Sender<Telemetry>,
+) -> io::Result<()> {
     loop {
         let mut header = [0; HEADER_BYTES];
         match stream.read_exact(&mut header) {
@@ -130,11 +145,28 @@ fn read_patches(mut stream: &TcpStream, control: &mut Control, status: &Status) 
         stream.read_exact(&mut payload)?;
 
         // A bad payload is rejected on its own; the stream stays in sync.
-        match control.apply(&payload) {
-            Ok(envelope) => {
-                status.epoch.store(envelope.epoch, Ordering::Release);
-            }
-            Err(err) => eprintln!("gorilla-engine: rejected patch: {err}"),
+        let rejection = match gorilla_proto::decode(&payload) {
+            Err(err) => Some((0, Vec::new(), err.to_string())),
+            Ok(envelope) => match control.apply(&envelope) {
+                Ok(()) => {
+                    status.epoch.store(envelope.epoch, Ordering::Release);
+                    None
+                }
+                Err(err) => Some((
+                    envelope.epoch,
+                    envelope
+                        .ops
+                        .iter()
+                        .map(|op| op.name().to_string())
+                        .collect(),
+                    err,
+                )),
+            },
+        };
+        if let Some((epoch, ops, reason)) = rejection {
+            eprintln!("gorilla-engine: rejected patch (epoch {epoch}): {reason}");
+            // The telemetry thread may already be gone; the log line stands.
+            let _ = rejections.send(Telemetry::Rejected { epoch, reason, ops });
         }
     }
 }
@@ -167,9 +199,8 @@ impl Control {
         }
     }
 
-    /// Decodes and validates a payload, then queues all of its ops, or none.
-    fn apply(&mut self, payload: &[u8]) -> Result<Envelope, String> {
-        let envelope = gorilla_proto::decode(payload).map_err(|e: ProtoError| e.to_string())?;
+    /// Validates an envelope, then queues all of its ops, or none.
+    fn apply(&mut self, envelope: &Envelope) -> Result<(), String> {
         let (next, msgs) = self.plan(&envelope.ops)?;
         if self.tx.slots() < msgs.len() {
             return Err(format!(
@@ -184,7 +215,7 @@ impl Control {
                 .map_err(|_| "ring buffer filled while queueing".to_string())?;
         }
         self.model = next;
-        Ok(envelope)
+        Ok(())
     }
 
     /// The model after `ops`, and the messages that take the audio thread
@@ -312,9 +343,8 @@ mod tests {
         Some((addr, rx, status))
     }
 
-    fn apply(control: &mut Control, envelope: &Envelope) -> Result<Envelope, String> {
-        let bytes = frame(envelope);
-        control.apply(bytes.get(HEADER_BYTES..).unwrap_or_default())
+    fn apply(control: &mut Control, envelope: &Envelope) -> Result<(), String> {
+        control.apply(envelope)
     }
 
     fn send(addr: SocketAddr, bytes: &[u8]) -> bool {
@@ -436,6 +466,40 @@ mod tests {
     }
 
     #[test]
+    fn rejections_are_reported_to_the_brain() {
+        let started = start();
+        assert!(started.is_some(), "could not start the control server");
+        let Some((addr, _rx, _status)) = started else {
+            return;
+        };
+        let stream = TcpStream::connect(addr);
+        assert!(stream.is_ok());
+        let Ok(mut stream) = stream else {
+            return;
+        };
+        assert!(
+            stream
+                .write_all(&frame(&set_steps("drums", "cowbell", 6)))
+                .is_ok()
+        );
+        assert!(stream.write_all(&[0, 0, 0, 1, 0xc1]).is_ok());
+        let rejections: Vec<Telemetry> = (0..400)
+            .filter_map(|_| read_telemetry(&mut stream))
+            .filter(|t| matches!(t, Telemetry::Rejected { .. }))
+            .take(2)
+            .collect();
+        assert!(matches!(
+            rejections.first(),
+            Some(Telemetry::Rejected { epoch: 6, ops, reason })
+                if ops == &["pattern/set-steps"] && reason.contains("cowbell")
+        ));
+        assert!(matches!(
+            rejections.get(1),
+            Some(Telemetry::Rejected { epoch: 0, ops, .. }) if ops.is_empty()
+        ));
+    }
+
+    #[test]
     fn schedule_bar_reaches_the_audio_thread() {
         let (mut control, mut rx) = control(4);
         let envelope = Envelope {
@@ -447,7 +511,7 @@ mod tests {
                 steps: [Step(false); PATTERN_STEPS],
             }],
         };
-        assert_eq!(apply(&mut control, &envelope), Ok(envelope));
+        assert_eq!(apply(&mut control, &envelope), Ok(()));
         assert_eq!(
             rx.pop(),
             Ok(RtMsg::ScheduleBar {

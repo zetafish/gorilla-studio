@@ -83,6 +83,23 @@ pub enum Patch {
     Reset,
 }
 
+impl Patch {
+    /// The op's name on the wire.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Patch::SetSteps { .. } => "pattern/set-steps",
+            Patch::ScheduleBar { .. } => "pattern/schedule-bar",
+            Patch::SetTransport { .. } => "transport/set",
+            Patch::RemoveRow { .. } => "pattern/remove-row",
+            Patch::RemovePattern { .. } => "pattern/remove",
+            Patch::SetChannel { .. } => "channel/set",
+            Patch::RemoveChannel { .. } => "channel/remove",
+            Patch::SetBpm { .. } => "song/set-bpm",
+            Patch::Reset => "song/reset",
+        }
+    }
+}
+
 /// What a channel plays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
@@ -115,6 +132,15 @@ pub enum Telemetry {
         playing: bool,
         bar: u64,
         step: u8,
+    },
+    /// An envelope the engine refused; nothing in it was applied. `ops` names
+    /// its ops (empty when it couldn't be decoded), so the brain can tell a
+    /// rejected song change, which needs a resync, from a rejected live op.
+    #[serde(rename = "engine/rejected")]
+    Rejected {
+        epoch: u64,
+        reason: String,
+        ops: Vec<String>,
     },
 }
 
@@ -349,7 +375,13 @@ pub fn malli_schema() -> String {
      [:epoch [:int {{:min 0}}]]
      [:playing :boolean]
      [:bar [:int {{:min 0}}]]
-     [:step [:int {{:min 0 :max {last_step}}}]]]]])
+     [:step [:int {{:min 0 :max {last_step}}}]]]]
+   [:engine/rejected
+    [:map {{:closed true}}
+     [:op [:= :engine/rejected]]
+     [:epoch [:int {{:min 0}}]]
+     [:reason :string]
+     [:ops [:vector :string]]]]])
 "#,
         u32_max = u32::MAX,
         last_step = PATTERN_STEPS - 1,
@@ -454,6 +486,11 @@ mod tests {
                 bar: 12,
                 step: 15,
             },
+            Telemetry::Rejected {
+                epoch: 4,
+                reason: "unknown row".into(),
+                ops: vec!["pattern/set-steps".into()],
+            },
         ] {
             let frame = encode_frame(&msg).unwrap_or_default();
             assert_eq!(decode_telemetry(payload(&frame)), Ok(msg));
@@ -483,6 +520,17 @@ mod tests {
             payload_len([0xff; HEADER_BYTES]),
             Err(ProtoError::FrameTooLarge(u32::MAX as usize))
         );
+    }
+
+    #[test]
+    fn op_names_match_the_wire() {
+        for envelope in examples() {
+            for op in &envelope.ops {
+                let bytes = rmp_serde::to_vec_named(op).unwrap_or_default();
+                let tag = String::from_utf8_lossy(&bytes).contains(op.name());
+                assert!(tag, "{} not on the wire", op.name());
+            }
+        }
     }
 
     #[test]

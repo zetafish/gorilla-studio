@@ -80,4 +80,10 @@
      [:epoch [:int {:min 0}]]
      [:playing :boolean]
      [:bar [:int {:min 0}]]
-     [:step [:int {:min 0 :max 15}]]]]])
+     [:step [:int {:min 0 :max 15}]]]]
+   [:engine/rejected
+    [:map {:closed true}
+     [:op [:= :engine/rejected]]
+     [:epoch [:int {:min 0}]]
+     [:reason :string]
+     [:ops [:vector :string]]]]])
