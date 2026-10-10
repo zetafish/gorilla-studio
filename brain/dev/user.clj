@@ -9,10 +9,18 @@
     (playhead)          ; where the engine is: {:bar 12 :step 3 :playing true ...}
     (disconnect!)       ; stop reconnecting; the engine keeps playing what it has
     (stop-engine!)      ; end an engine that connect! started
-    (reload!)           ; reload every changed namespace, in dependency order"
+    (reload!)           ; reload every changed namespace, in dependency order
+
+  Live patterns (generators from gorilla.pattern are referred here):
+
+    (defpattern :hat (fn [bar] (euclid (+ 3 (mod bar 4)) 16)))
+    (defpattern :kick (fn [bar] (every 4 bar \"x..x..x...x.x...\" \"x...x...x...x...\")))
+    (unpattern :hat)    ; back to the song's row"
   (:require [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.track :as track]
             [gorilla.engine :as engine]
+            [gorilla.live :as live :refer [defpattern]]
+            [gorilla.pattern :refer [steps euclid rotate invert overlay mask chance every]]
             [gorilla.studio :as studio]))
 
 (defn reload!
@@ -31,11 +39,20 @@
 
 (defn stop-engine! [] (engine/stop-engine!))
 
-(defn play! [] (engine/set-playing! true) :playing)
+(defn play! [] (live/play!))
 
 (defn stop! [] (engine/set-playing! false) :stopped)
 
 (defn playhead [] @engine/playhead)
+
+(defn unpattern
+  ([row] (live/remove-pattern! row))
+  ([pattern row] (live/remove-pattern! pattern row)))
+
+(defn patterns
+  "Live patterns and their source."
+  []
+  (into (sorted-map) (map (fn [[k v]] [k (:source v)])) @live/patterns))
 
 (defn toggle!
   ([row step] (toggle! :drums row step))

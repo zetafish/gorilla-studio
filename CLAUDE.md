@@ -28,7 +28,7 @@ A pattern-based DAW: a Clojure **brain** (song model, commands, undo, UI, live c
 ### Brain (Clojure)
 - The song is one immutable EDN value in an atom. Undo is a history of song values.
 - Every user-visible action is a command: id, malli params schema, label, and a pure `(fn [song params] -> song)`. UI, REPL, MCP and shortcuts all go through `dispatch`.
-- The brain never schedules notes in real time. Live patterns are pure functions of the bar number, evaluated about 2 bars ahead and written into the song as concrete notes.
+- The brain never schedules notes in real time. Live patterns are pure functions of the bar number, evaluated about 2 bars ahead and sent to the engine as concrete per-bar steps (`:pattern/schedule-bar`). Generated bars are not written into the song value, so they never touch undo history.
 - Saved songs contain only data. Live pattern source is kept as a string and is never evaluated on load. In-song expressions run in SCI with no I/O.
 - Shared code (song model, commands, differ, patterns) lives in `.cljc` so the web build can reuse it.
 

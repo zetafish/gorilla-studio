@@ -38,6 +38,20 @@ Then, in the REPL (helpers live in `brain/dev/user.clj`):
 (reload!)           ; after code changes, keeps the song
 ```
 
+## Third milestone: live patterns
+
+Status: implemented. Rows can be functions of the bar number, evaluated two bars ahead and queued in the engine per bar:
+
+```clojure
+(defpattern :hat (fn [bar] (euclid (+ 3 (mod bar 4)) 16)))
+(defpattern :kick (fn [bar] (every 2 bar "x..x..x...x.x..." "x...x...x...x...")))
+(defpattern :snare (fn [bar] (overlay "....x.......x..." (chance 0.15 bar))))
+(patterns)          ; what's live, with source
+(unpattern :hat)    ; back to the song's row
+```
+
+Generators live in `gorilla.pattern`: `steps` (also parses `"x..x"` strings), `euclid`, `rotate`, `invert`, `overlay`, `mask`, `chance`, `every`. Redefining a pattern lands on the next bar line.
+
 ## Second milestone: the engine talks back
 
 Status: implemented. The engine says hello on connect (a random engine id and its epoch) and streams the playhead at about 60 Hz on the same socket. The brain uses the hello to send only what a reconnecting engine is missing, and `connect!` keeps the link up, restarting a crashed engine with `cargo run`.

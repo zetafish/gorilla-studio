@@ -44,7 +44,15 @@
   ;; Latest :engine/playhead from the engine, plus :received-at (epoch ms).
   (atom nil))
 
+(defonce ^{:doc "Counts transport starts; each one restarts the engine's bar numbers."}
+  transport-starts (atom 0))
+
 (defn connected? [] (some? @link))
+
+(defn engine-id
+  "The connected engine's random id, or nil."
+  []
+  (:engine-id @link))
 
 (defn- log [& args] (apply println "gorilla.engine:" args))
 
@@ -75,15 +83,24 @@
                    (send-envelope! {:epoch (swap! epoch inc) :ops ops}))
           (reset! synced {:engine-id engine-id :song song}))))))
 
+(defn send-live!
+  "Sends ops that aren't song changes (transport, scheduled bars) at the
+  current epoch. Returns true if they were written."
+  [ops]
+  (locking write-lock
+    (send-envelope! {:epoch @epoch :ops (vec ops)})))
+
 (defn set-playing!
   "Starts (from the top) or stops the engine's transport. Transport isn't song
-  data, so it doesn't touch the song, undo history or epoch."
-  [playing?]
-  (when-not (connected?)
-    (throw (ex-info "Not connected to the engine" {})))
-  (locking write-lock
-    (send-envelope! {:epoch @epoch
-                     :ops [{:op :transport/set :playing (boolean playing?)}]})))
+  data, so it doesn't touch the song, undo history or epoch. `then-ops` go in
+  the same envelope, after the transport op, so bars scheduled there are
+  queued before the first buffer plays."
+  ([playing?] (set-playing! playing? []))
+  ([playing? then-ops]
+   (when-not (connected?)
+     (throw (ex-info "Not connected to the engine" {})))
+   (when playing? (swap! transport-starts inc))
+   (send-live! (into [{:op :transport/set :playing (boolean playing?)}] then-ops))))
 
 ;; --- Receiving --------------------------------------------------------------
 

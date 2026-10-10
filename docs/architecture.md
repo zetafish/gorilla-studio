@@ -149,9 +149,11 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
          (rhythm [1/4 1/8 1/8 1/2]))))
 ```
 
-- **Lookahead:** a loop evaluates each live pattern ~2 bars ahead and writes concrete notes into the song.
-- **Quantized edits:** redefining a pattern takes effect at the next bar or beat.
-- **Safe files:** live patterns are saved as materialized output, with source kept as a string. Songs open without evaluating code.
+- **Lookahead:** a scheduler (`gorilla.live`) watches the engine's playhead and evaluates each live pattern for the next 2 bars, sending the concrete steps as `:pattern/schedule-bar` patches. The engine switches rows exactly on the bar line; if the brain goes away, the last bar keeps looping.
+- **Live output is not song data.** Earlier drafts wrote each generated bar into the song value. That would push a new song onto the undo history every bar and make the differ resend rows constantly, so generated bars go straight to the engine instead, like transport. The song keeps its own static rows; removing a live pattern sends the song's row back.
+- **Quantized edits:** redefining a pattern re-sends the bars already queued, so the change lands on the next bar line.
+- **Starting playback** sends the transport op and the first bars in one envelope, so live rows are right from bar 0.
+- **Safe files** (not built yet): live patterns will be saved as materialized output, with source kept as a string (`defpattern` already records it). Songs open without evaluating code.
 - **Expressions** inside the song run in SCI (sandboxed, no I/O).
 
 ## 6. UI = f(song)
