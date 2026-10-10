@@ -20,6 +20,13 @@ impl Row {
 
 pub type Steps = [bool; STEPS];
 
+/// Messages from the control thread. `Copy` and fixed-size, so they cross the
+/// ring buffer without allocating.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtMsg {
+    SetSteps { row: Row, steps: Steps },
+}
+
 const X: bool = true;
 const O: bool = false;
 
@@ -57,10 +64,12 @@ impl Sequencer {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "patches arrive with the control socket")
-    )]
+    pub fn apply(&mut self, msg: RtMsg) {
+        match msg {
+            RtMsg::SetSteps { row, steps } => self.set_steps(row, steps),
+        }
+    }
+
     pub fn set_steps(&mut self, row: Row, steps: Steps) {
         if let Some((_, slot)) = Row::ALL
             .iter()
@@ -239,6 +248,23 @@ mod tests {
         let (first, rest) = out.split_at(6_000);
         assert_eq!(peak(first), 0.0);
         assert!(peak(rest) > 0.0);
+    }
+
+    #[test]
+    fn apply_replaces_a_row() {
+        let mut seq = Sequencer::new(SR, 120.0);
+        for row in Row::ALL {
+            seq.apply(RtMsg::SetSteps {
+                row,
+                steps: [false; STEPS],
+            });
+        }
+        assert_eq!(seq.pattern, [[false; STEPS]; ROW_COUNT]);
+        seq.apply(RtMsg::SetSteps {
+            row: Row::Snare,
+            steps: [true; STEPS],
+        });
+        assert_eq!(seq.pattern, [[false; STEPS], [true; STEPS], [false; STEPS]]);
     }
 
     #[test]

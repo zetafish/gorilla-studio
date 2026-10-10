@@ -102,6 +102,8 @@ The engine never sees EDN. A watch on the song atom diffs old and new values and
 ```
 
 - **Wire format:** each message is a 4-byte big-endian length and a MessagePack map, at most 64 KiB. Ops are maps tagged by `:op` (a serde internally tagged enum). Keywords travel as strings holding their full name, so `:pattern/set-steps` is `"pattern/set-steps"`.
+- **Transport:** TCP on loopback, `127.0.0.1:7878` by default (`GORILLA_ENGINE_ADDR` overrides it). Chosen over Unix sockets because it works the same on macOS, Linux, Windows and the JVM. One brain connects at a time; the protocol has no authentication, so it must stay on loopback.
+- **Rejection:** an envelope is applied whole or not at all. A bad payload is logged and skipped while the connection stays open; a bad length header drops the connection, since the stream can't be resynced.
 
 - Validated twice: malli in the brain, serde-parsed Rust types in the engine. Malformed input is rejected; current state stays untouched.
 - Each patch carries an epoch so the engine can report which song version it's playing.
@@ -123,6 +125,7 @@ At 128 samples and 48 kHz, each buffer must be ready in 2.67 ms. Missing one dea
 
 - **Graph swaps:** the audio thread always runs one immutable graph; a new one appears between buffers.
 - **Parameter changes** (volume, cutoff) skip graph rebuilds: per-parameter lock-free queues, smoothed to avoid zipper noise.
+- **Pattern data** (step toggles, notes) also skips graph rebuilds. The control thread turns patches into fixed-size `Copy` messages on an `rtrb` queue, and the audio thread drains it at the start of each buffer.
 - **Parallelism:** independent tracks render on a fixed, real-time-safe worker pool, ordered by dependencies.
 - **Plugin hosting** is the only place that needs `unsafe`, isolated in `engine/host`.
 
