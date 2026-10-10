@@ -24,12 +24,14 @@
     (channel! :kick2 :kick)                               ; a built-in drum
     (row! :pop \"....x.......x..x\")                       ; row :pop in :drums
     (row! :fills :pop \"xxxx............\")               ; another pattern
-    (remove-row! :pop) (remove-channel! :pop)"
+    (remove-row! :pop) (remove-channel! :pop)
+    (new-song!)         ; empty song, live patterns cleared (undo restores the song)"
   (:require [clojure.tools.namespace.dir :as dir]
             [clojure.tools.namespace.track :as track]
             [gorilla.engine :as engine]
             [gorilla.live :as live :refer [defpattern]]
             [gorilla.pattern :as pattern :refer [steps euclid rotate invert overlay mask chance every]]
+            [gorilla.song]
             [gorilla.studio :as studio]))
 
 (defn reload!
@@ -66,6 +68,15 @@
 (def ^:private steps* pattern/steps)
 
 (defn- dispatch! [cmd] (studio/dispatch! cmd) :ok)
+
+(defn new-song!
+  "Replaces the song with an empty one (or `song`) and clears live patterns.
+  Undo brings the previous song back, but not its live patterns."
+  ([] (new-song! gorilla.song/empty-song))
+  ([song]
+   (doseq [[pattern row] (keys @live/patterns)]
+     (live/remove-pattern! pattern row))
+   (dispatch! {:cmd :song/replace :song song})))
 
 (defn bpm! [bpm] (dispatch! {:cmd :song/set-bpm :bpm bpm}))
 

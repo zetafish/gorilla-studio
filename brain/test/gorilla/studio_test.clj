@@ -19,3 +19,12 @@
   (is (thrown? clojure.lang.ExceptionInfo (studio/dispatch! (assoc toggle :step 99))))
   (is (= song/default-song @studio/song))
   (is (= {:past [] :future []} @studio/history)))
+
+(deftest replacing-the-song-is-validated-and-undoable
+  (let [other (assoc song/empty-song :song/bpm 90)]
+    (studio/dispatch! {:cmd :song/replace :song other})
+    (is (= other @studio/song))
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (studio/dispatch! {:cmd :song/replace :song (assoc other :song/bpm 0)})))
+    (studio/undo!)
+    (is (= song/default-song @studio/song))))

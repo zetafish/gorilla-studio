@@ -99,3 +99,11 @@
    :label "Remove pattern"}
   (fn [song {:keys [pattern]}]
     (update song :patterns dissoc pattern)))
+
+(defcommand :song/replace
+  {:params [:map [:song :map]]
+   :label "Replace song"}
+  ;; The result is validated like any command's, so an invalid song is refused
+  ;; whole. Undo brings the previous song back.
+  (fn [_ {:keys [song]}]
+    song))
