@@ -1,0 +1,10 @@
+[package]
+name = "gorilla-proto"
+description = "Patch and telemetry types shared by the brain and the engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
