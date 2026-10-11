@@ -156,3 +156,11 @@
    :label "Loop arrangement"}
   (fn [song {:keys [loop]}]
     (assoc song :song/loop loop)))
+
+(defcommand :pattern/add
+  {:params [:map [:pattern :keyword]]
+   :label "Add pattern"}
+  (fn [song {:keys [pattern]}]
+    (when (get-in song [:patterns pattern])
+      (throw (ex-info (str "Pattern " pattern " already exists") {:pattern pattern})))
+    (assoc-in song [:patterns pattern] {:steps {}})))

@@ -43,7 +43,12 @@
       (for [channel (sort (keys (:channels old)))
             :when (not (contains? (:channels new) channel))]
         {:op :channel/remove :channel channel})
-      (let [arrangement (fn [s] [(or (:playlist s) []) (boolean (:song/loop s))])
+      ;; The engine only knows patterns that have rows, so clips of an empty
+      ;; pattern stay in the song but aren't sent.
+      (let [arrangement (fn [s]
+                          [(filterv #(seq (song/rows (get-in s [:patterns (:pattern %)])))
+                                    (or (:playlist s) []))
+                           (boolean (:song/loop s))])
             [clips looping] (arrangement new)]
         (when (not= (arrangement old) (arrangement new))
           [{:op :song/set-playlist
