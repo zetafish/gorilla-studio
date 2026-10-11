@@ -46,3 +46,7 @@ flycheck_*
 
 # Web UI build output
 /web/public/js/
+
+# Tauri
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/

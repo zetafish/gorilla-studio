@@ -1,0 +1,16 @@
+[package]
+name = "gorilla-desktop"
+description = "Gorilla Studio: the web UI in a Tauri window"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Its own workspace, apart from engine/: a UI shell, not real-time code.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

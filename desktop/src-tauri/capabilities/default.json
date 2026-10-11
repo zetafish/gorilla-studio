@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window. The UI needs no Tauri APIs: it only talks to the brain's WebSocket.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
