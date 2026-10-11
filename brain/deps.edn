@@ -3,6 +3,8 @@
         metosin/malli {:mvn/version "0.20.3"}
         org.msgpack/msgpack-core {:mvn/version "0.9.12"}
         org.babashka/sci {:mvn/version "0.15.59"}
+        ;; Serves the web UI (Tauri or a browser) over a loopback WebSocket.
+        http-kit/http-kit {:mvn/version "2.8.1"}
         ;; Desktop UI. Alpha and moving fast, so pinned to a commit.
         io.github.humbleui/humbleui {:git/url "https://github.com/HumbleUI/HumbleUI"
                                      :git/sha "ebb540a915420fc9d5c65fc6715424c6c2bbc6ab"}}
@@ -24,4 +26,10 @@
        :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
                     org.clojure/tools.namespace {:mvn/version "1.5.1"}}
        :jvm-opts ["--sun-misc-unsafe-memory-access=allow" "--enable-native-access=ALL-UNNAMED"]
-       :main-opts ["-m" "gorilla.ui.main"]}}}
+       :main-opts ["-m" "gorilla.ui.main"]}
+  ;; The brain for the web UI: WebSocket server, engine, and an nREPL server.
+  :serve {:extra-paths ["dev"]
+          :extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}
+                       org.clojure/tools.namespace {:mvn/version "1.5.1"}}
+          :jvm-opts ["--sun-misc-unsafe-memory-access=allow" "--enable-native-access=ALL-UNNAMED"]
+          :main-opts ["-m" "gorilla.server"]}}}
