@@ -401,6 +401,8 @@ pub fn malli_schema() -> String {
 
 (def pattern-steps {PATTERN_STEPS})
 
+(def max-clips {MAX_CLIPS})
+
 (def Gen
   [:multi {{:dispatch :type}}
    [:builtin

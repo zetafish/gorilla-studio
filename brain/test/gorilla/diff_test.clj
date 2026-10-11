@@ -66,3 +66,13 @@
     (testing "turning a steps row into notes is one op, not a removal"
       (is (= [{:op :pattern/set-notes :pattern :drums :row :hat :notes []}]
              (diff/diff s (run s {:cmd :pattern/set-notes :pattern :drums :row :hat :notes []})))))))
+
+(deftest the-arrangement-goes-out-whole
+  (let [song (run s {:cmd :playlist/set :clips [{:pattern :drums :start 0 :len 4 :track 2}]}
+                  {:cmd :song/set-loop :loop true})]
+    (is (= [{:op :song/set-playlist :clips [{:pattern :drums :start 0 :len 4}] :looping true}]
+           (diff/diff s song)))
+    (is (m/validate proto/Envelope {:epoch 1 :ops (diff/diff s song)}))
+    (is (= [] (diff/diff song song)))
+    (is (not-any? #(= :song/set-playlist (:op %)) (diff/snapshot s))
+        "no arrangement, nothing to send")))

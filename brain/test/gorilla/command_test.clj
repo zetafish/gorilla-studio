@@ -63,3 +63,17 @@
       (is (thrown? clojure.lang.ExceptionInfo
                    (command/run song {:cmd :pattern/set-notes :pattern :low :row :bass
                                       :notes [{:t 16 :len 1 :pitch 60 :vel 1}]}))))))
+
+(deftest the-playlist
+  (let [song (-> s
+                 (command/run {:cmd :playlist/add :pattern :drums :start 8 :len 8})
+                 (command/run {:cmd :playlist/add :pattern :drums :start 0 :len 4 :track 1}))]
+    (is (= [0 8] (map :start (:playlist song))) "kept in order")
+    (is (song/valid? song))
+    (is (= [8] (map :start (:playlist (command/run song {:cmd :playlist/remove :pattern :drums :start 0})))))
+    (testing "clips need their pattern"
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (command/run song {:cmd :playlist/add :pattern :nope :start 0 :len 1}))))
+    (testing "removing a pattern removes its clips"
+      (is (= [] (:playlist (command/run song {:cmd :pattern/remove :pattern :drums})))))
+    (is (true? (:song/loop (command/run song {:cmd :song/set-loop :loop true}))))))

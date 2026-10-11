@@ -105,7 +105,9 @@
   {:params [:map [:pattern :keyword]]
    :label "Remove pattern"}
   (fn [song {:keys [pattern]}]
-    (update song :patterns dissoc pattern)))
+    (-> song
+        (update :patterns dissoc pattern)
+        (update :playlist #(filterv (fn [c] (not= pattern (:pattern c))) %)))))
 
 (defcommand :song/replace
   {:params [:map [:song :map]]
@@ -126,3 +128,31 @@
           (update-in song [:patterns pattern :steps] dissoc row)
           song)
         (assoc-in [:patterns pattern :notes row] notes))))
+
+(defn- sort-clips [clips]
+  (vec (sort-by (juxt :start #(:track % 0) :pattern) clips)))
+
+(defcommand :playlist/set
+  {:params [:map [:clips [:vector song/Clip]]]
+   :label "Arrange"}
+  (fn [song {:keys [clips]}]
+    (assoc song :playlist (sort-clips clips))))
+
+(defcommand :playlist/add
+  {:params song/Clip
+   :label "Add clip"}
+  (fn [song clip]
+    (update song :playlist #(sort-clips (conj % clip)))))
+
+(defcommand :playlist/remove
+  {:params [:map [:pattern :keyword] [:start [:int {:min 0}]]]
+   :label "Remove clip"}
+  (fn [song {:keys [pattern start]}]
+    (update song :playlist
+            (fn [clips] (filterv #(not (and (= pattern (:pattern %)) (= start (:start %)))) clips)))))
+
+(defcommand :song/set-loop
+  {:params [:map [:loop :boolean]]
+   :label "Loop arrangement"}
+  (fn [song {:keys [loop]}]
+    (assoc song :song/loop loop)))

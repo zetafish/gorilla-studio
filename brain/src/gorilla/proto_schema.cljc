@@ -6,6 +6,8 @@
 
 (def pattern-steps 16)
 
+(def max-clips 4096)
+
 (def Gen
   [:multi {:dispatch :type}
    [:builtin

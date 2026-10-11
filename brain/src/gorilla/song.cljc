@@ -50,6 +50,18 @@
   (every? #(contains? channels %)
           (mapcat (comp #(map first (rows %)) val) patterns)))
 
+(def Clip
+  "A pattern placed in the arrangement, in bars. :track is a lane for
+  display; it doesn't change what plays."
+  [:map {:closed true}
+   [:pattern :keyword]
+   [:start [:int {:min 0}]]
+   [:len [:int {:min 1}]]
+   [:track {:optional true} [:int {:min 0}]]])
+
+(defn- clips-have-patterns? [{:keys [playlist patterns]}]
+  (every? #(contains? patterns (:pattern %)) playlist))
+
 (def Song
   [:and
    [:map
@@ -57,10 +69,14 @@
     [:song/time-sig [:tuple pos-int? pos-int?]]
     [:patterns [:map-of :keyword Pattern]]
     [:channels [:map-of :keyword Channel]]
-    [:playlist [:vector :any]]
+    [:playlist [:vector {:max proto/max-clips} Clip]]
+    ;; With a playlist: start over after the last clip instead of stopping.
+    [:song/loop {:optional true} :boolean]
     [:mixer :map]]
    [:fn {:error/message "every row needs a channel with the same id"}
-    rows-have-channels?]])
+    rows-have-channels?]
+   [:fn {:error/message "every clip needs its pattern"}
+    clips-have-patterns?]])
 
 (def valid? (m/validator Song))
 

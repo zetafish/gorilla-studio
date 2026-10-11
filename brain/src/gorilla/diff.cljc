@@ -42,7 +42,13 @@
       ;; Removing a channel also removes its rows in the engine.
       (for [channel (sort (keys (:channels old)))
             :when (not (contains? (:channels new) channel))]
-        {:op :channel/remove :channel channel})))))
+        {:op :channel/remove :channel channel})
+      (let [arrangement (fn [s] [(or (:playlist s) []) (boolean (:song/loop s))])
+            [clips looping] (arrangement new)]
+        (when (not= (arrangement old) (arrangement new))
+          [{:op :song/set-playlist
+            :clips (mapv #(select-keys % [:pattern :start :len]) clips)
+            :looping looping}]))))))
 
 (defn snapshot
   "Patches that bring any engine to exactly `song`."

@@ -34,6 +34,12 @@
     (defpattern :low :bass
       (fn [bar] (rhythm [1/8] (markov-walk {:seed bar :len 8 :scale (scale :a1 :minor)}))))
 
+  Arrangement (bars counted from play; with no clips every pattern loops):
+
+    (arrange! [[:intro 0 8] [:drop 8 16] [:intro 24 4]])   ; [pattern start len]
+    (loop! true)        ; start over after the last clip instead of stopping
+    (arrange! [])       ; back to every pattern looping
+
   Songs on disk (a folder: song.edn plus assets/):
 
     (save! \"songs/dnb\")  ; later just (save!)
@@ -133,6 +139,15 @@
   [pattern channel notes]
   (dispatch! {:cmd :pattern/set-notes :pattern pattern :row channel
               :notes (pattern/notes notes)}))
+
+(defn arrange!
+  "Replaces the playlist: a seq of [pattern start-bar length-in-bars]."
+  [clips]
+  (dispatch! {:cmd :playlist/set
+              :clips (mapv (fn [[pattern start len]] {:pattern pattern :start start :len len})
+                           clips)}))
+
+(defn loop! [on?] (dispatch! {:cmd :song/set-loop :loop (boolean on?)}))
 
 (defn remove-row!
   ([channel] (remove-row! :drums channel))
