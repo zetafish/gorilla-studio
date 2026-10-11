@@ -16,14 +16,14 @@ When a milestone finishes or a gap is closed, update this file in the same chang
 | 4 | The song drives the engine | Done |
 | 5 | Save and load | Done |
 | 6 | Melody and arrangement | Done |
-| 7 | Mixer and effects | **Next** |
-| 8 | Desktop UI | Planned |
+| 7 | Desktop UI | Done, pending your hands-on test |
+| 8 | Mixer and effects | **Next** |
 | 9 | Agent access (MCP) | Planned |
 | 10 | Offline export | Planned |
 | 11 | Plugin hosting | Planned |
 | 12 | Web target | Planned |
 
-The order after milestone 6 is flexible. Agent access (9) is cheap because every action is already a command, so it can move earlier whenever it's useful.
+The order after milestone 6 is flexible; the UI moved ahead of the mixer so the app could be used without the REPL. Agent access (9) is cheap because every action is already a command, so it can move earlier whenever it's useful.
 
 ## Done
 
@@ -91,25 +91,27 @@ Prove the two-process design end to end.
 
 **Done when:** a live melodic pattern plays in key over a drum loop; an arrangement of several patterns plays start to finish.
 
+### 7. Desktop UI
+
+- **HumbleUI window:** top bar (play/stop, BPM, position, engine status, undo/redo, save/open), pattern list, channel rack for the selected pattern, and the playlist. `clojure -M:ui` starts it with the engine and an nREPL server; `(gorilla.ui.app/show!)` opens it from a REPL.
+- **Rack:** every channel is a row of 16 steps; click toggles a step (creating the row if needed), note rows show and toggle notes, live rows are marked and show what they play this bar, × removes a channel. "+ Channel" offers the built-in voices and samples (macOS sounds and `brain/samples/`).
+- **Playlist:** one lane per pattern; click a bar to add a clip (up to 4 bars, stopping at the next clip), click a clip to remove it; loop toggle; playhead line; clips playing now are brighter.
+- **Shortcuts:** space play/stop, ⌘Z undo, ⇧⌘Z redo, ⌘S save. Save writes to the current folder or `brain/songs/untitled-N`; Open lists folders in `brain/songs/`.
+- Everything goes through `dispatch!`, so every action can be undone. What to show and what a click means live in `gorilla.ui.model` (pure, tested); the UI is also tested off-screen by drawing into a Skia surface and sending it mouse events.
+
+**Done when:** a beat can be built and arranged without the REPL, and every UI action can be undone.
+
 ## Next
 
-### 7. Mixer and effects
+### 8. Mixer and effects
 
-- Mixer channels with volume, pan, sends and an effect chain (`fundsp`).
+- Mixer channels with volume, pan, sends and an effect chain (`fundsp`), and a mixer view in the UI.
 - Parameter changes through per-parameter lock-free queues with smoothing, without graph rebuilds.
-- Meters in telemetry. Move telemetry to shared memory if meters and scopes need the bandwidth.
+- Meters in telemetry, shown in the UI. Move telemetry to shared memory if meters and scopes need the bandwidth.
 
 **Done when:** sweeping a filter cutoff from the REPL is smooth (no zipper noise); adding an effect while playing makes no click.
 
 ## Planned
-
-### 8. Desktop UI
-
-- HumbleUI: step sequencer, playlist and mixer as custom-drawn canvases. The UI reads the song atom and dispatches commands; it is never the source of truth.
-- The playhead and meters come from telemetry.
-- Packaging: the brain launches a bundled engine binary instead of `cargo run`.
-
-**Done when:** a beat can be built and arranged without the REPL, and every UI action can be undone.
 
 ### 9. Agent access (MCP)
 
@@ -145,15 +147,18 @@ Things that work but aren't finished, with the milestone that should close each 
 | Gap | Why it matters | Close in |
 |---|---|---|
 | The malli schema is rendered by hand in `gorilla_proto::malli_schema()` | The examples cross-check catches drift in field names and types, but a derive (or `schemars`) would remove the hand-written half | Any |
-| A retriggered sample restarts without a fade | Can click on long samples | 7 |
-| Decoded samples are never evicted from the cache | Memory grows if you swap through many samples | 7 |
+| A retriggered sample restarts without a fade | Can click on long samples | 8 |
+| Decoded samples are never evicted from the cache | Memory grows if you swap through many samples | 8 |
 | The engine starts at 120 BPM until a brain sends the song | Only matters before the first connect | Any |
 | `symphonia` is MPL-2.0 | Not banned (file-level copyleft), but not MIT/Apache either; `hound` (Apache-2.0) covers WAV if that ever matters | Any |
 | A live pattern stopped for running over budget may keep a thread busy | The JVM can't kill a thread; pure code that never yields runs until it finishes | Any |
-| Each channel plays one note at a time | No chords on one channel yet; use one channel per voice | 7 |
-| Sampler root pitch is fixed at 60 | A sample recorded at another pitch plays out of tune with synths | 7 |
-| The playhead reports bars since play, not the position in the arrangement | Fine for live patterns; a UI will want both | 8 |
-| Telemetry is a socket stream, not shared memory | Enough for the playhead; maybe not for scopes and spectra | 7 |
-| Auto-restart runs `cargo run` from `../engine` | Works only from a dev checkout | 8 |
+| Each channel plays one note at a time | No chords on one channel yet; use one channel per voice | 8 |
+| Sampler root pitch is fixed at 60 | A sample recorded at another pitch plays out of tune with synths | 8 |
+| The playhead reports bars since play; the UI derives the arrangement position from the song | Works while brain and engine agree on the playlist | Any |
+| Telemetry is a socket stream, not shared memory | Enough for the playhead; maybe not for scopes and spectra | 8 |
+| Auto-restart runs `cargo run` from `../engine` | Works only from a dev checkout; a packaged app needs a bundled engine binary | Packaging |
+| The UI edits steps and notes per step, but has no piano roll (pitch, length) or drag to resize clips | Notes keep the pitch of the last note; clip length is fixed at click time | UI follow-up |
+| No native file dialogs (HumbleUI has none) | Save and Open work with `brain/songs/`; other folders need the REPL | UI follow-up |
+| HumbleUI is alpha and pinned to a commit | Updating it may need code changes | Any |
 | `msgpack-core` needs `--sun-misc-unsafe-memory-access=allow` on JDK 24+ | A future JDK may remove the API; a small built-in encoder would drop the dependency | Any |
 | One brain connection at a time, with no authentication | Must stay on loopback; agents go through the brain (MCP), not the socket | 9 |

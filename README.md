@@ -11,9 +11,19 @@ See [`docs/architecture.md`](docs/architecture.md) for the design, [`docs/roadma
 
 ## Status
 
-Milestones 1–6 are done: the two-process slice, telemetry with resync, live patterns, an engine driven by the song (channels, samples, tempo, graph swaps), saving and opening songs, and melody with an arrangement. Next is milestone 7, mixer and effects. Details in the [roadmap](docs/roadmap.md).
+Milestones 1–7 are done: the two-process slice, telemetry with resync, live patterns, an engine driven by the song (channels, samples, tempo, graph swaps), saving and opening songs, melody with an arrangement, and a desktop UI. Next is milestone 8, mixer and effects. Details in the [roadmap](docs/roadmap.md).
 
 ## Try it
+
+The desktop app (window, engine and an nREPL server to live-code alongside it):
+
+```sh
+cd brain && clojure -M:ui
+```
+
+Click steps in the channel rack, add channels with "+ Channel", click bars in the playlist to arrange; space plays and stops, ⌘Z undoes. `(gorilla.ui.app/show!)` opens the same window from a REPL.
+
+Or just the REPL (`:nrepl` adds `dev/` with the helpers in `dev/user.clj`; CIDER picks it up from `brain/.dir-locals.el`):
 
 ```sh
 cd brain && clojure -M:nrepl     # the brain starts the engine itself on (connect!)

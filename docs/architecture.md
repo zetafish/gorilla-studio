@@ -169,6 +169,8 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
 
 - Desktop: HumbleUI (Skia). Web: re-frame in Tauri or the browser. The UI reads the song atom and dispatches commands; it is never the source of truth.
 - Piano roll, playlist and step sequencer are custom-drawn canvases.
+- **Desktop UI as built** (`gorilla.ui`): `ui.model` turns the song into view data and turns a click position into a command (pure `.cljc`, unit-tested). `ui.app` draws that with HumbleUI. HumbleUI signals mirror the song atom and live patterns, so components re-render when they change; the playhead changes 60 times a second, so canvases read it while painting and a watch only requests a frame. UI-only state (selected pattern, open picker, status line) lives in one signal and never in the song or undo history.
+- **Testing the UI:** `gorilla.ui.snapshot` mounts components without a window, draws them into a Skia raster surface (and PNG), and delivers mouse events to the tree, so clicks are tested end to end without a display.
 - Waveforms, meters and playhead come from engine telemetry and are never stored in the song.
 
 ## 7. Failure modes
