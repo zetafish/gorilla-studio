@@ -11,6 +11,7 @@
             [gorilla.file :as file]
             [gorilla.live :as live]
             [gorilla.studio :as studio]
+            [gorilla.ui.actions :as actions]
             [gorilla.ui.model :as model]
             [io.github.humbleui.app :as app]
             [io.github.humbleui.canvas :as canvas]
@@ -31,8 +32,6 @@
 (defonce *view (ui/signal {:pattern :drums :picker nil :status nil}))
 
 (defonce *window (atom nil))
-
-(def songs-dir "Where Save puts new songs and Open looks for them." "songs")
 
 (defn- request-frame []
   (when-some [w @*window]
@@ -70,63 +69,20 @@
 (defn- status! [msg]
   (swap! *view assoc :status msg))
 
-(defn- run!
-  "Dispatches a command; a refusal shows in the status line instead of
-  throwing into the UI."
-  [cmd]
-  (try
-    (studio/dispatch! cmd)
-    (status! nil)
-    (catch Exception e
-      (status! (ex-message e)))))
+(defn- run! [cmd] (status! (actions/run! cmd)))
 
-(defn- playing? [] (boolean (:playing @engine/playhead)))
-
-(defn toggle-play! []
-  (try
-    (if (playing?) (engine/set-playing! false) (live/play!))
-    (catch Exception e (status! (ex-message e)))))
-
-(defn undo! [] (studio/undo!) (status! nil))
-(defn redo! [] (studio/redo!) (status! nil))
-
-(defn- song-folders []
-  (->> (.listFiles (io/file songs-dir))
-       (filter #(.isFile (io/file % "song.edn")))
-       (map #(.getName ^java.io.File %))
-       sort))
-
-(defn save! []
-  (try
-    (let [dir (or @file/current
-                  (let [taken (set (song-folders))]
-                    (str (io/file songs-dir (first (remove taken (map #(str "untitled-" %) (iterate inc 1))))))))]
-      (file/save! dir)
-      (status! (str "Saved " dir)))
-    (catch Exception e (status! (str "Save failed: " (ex-message e))))))
+(defn toggle-play! [] (status! (actions/toggle-play!)))
+(defn undo! [] (status! (actions/undo!)))
+(defn redo! [] (status! (actions/redo!)))
+(defn save! [] (status! (actions/save!)))
 
 (defn open! [name]
-  (try
-    (file/open! (io/file songs-dir name))
-    (swap! *view assoc :picker nil)
-    (status! (str "Opened " name))
-    (catch Exception e (status! (str "Open failed: " (ex-message e))))))
-
-(def builtins [:kick :snare :hat :bass :lead])
-
-(defn- sample-files []
-  (->> [(io/file "/System/Library/Sounds") (io/file "samples")]
-       (mapcat #(.listFiles ^java.io.File %))
-       (filter #(re-find #"(?i)\.(wav|aiff?|flac)$" (.getName ^java.io.File %)))
-       (sort-by #(.getName ^java.io.File %))))
+  (status! (actions/open! name))
+  (swap! *view assoc :picker nil))
 
 (defn add-channel! [gen base-name]
-  (let [channel (model/next-name (name base-name) (:channels @studio/song))
-        channel (if (contains? (:channels @studio/song) (keyword base-name))
-                  channel
-                  (keyword base-name))]
-    (run! {:cmd :channel/set :channel channel :gen gen})
-    (swap! *view assoc :picker nil)))
+  (status! (actions/add-channel! gen base-name))
+  (swap! *view assoc :picker nil))
 
 ;; --- Look ----------------------------------------------------------------------------
 
@@ -156,17 +112,10 @@
                (contains? (model/active-patterns song (model/song-position song bar)) pattern))
       step)))
 
-(defn- live-bars
-  "What live patterns sent for the bar playing now: [pattern row] -> data."
-  []
-  (let [bar (:bar @engine/playhead)
-        sent (:sent @@#'live/state)]
-    (into {} (keep (fn [[[p r b] data]] (when (= b bar) [[p r] data]))) sent)))
-
 (defn- paint-rack [song pattern live ctx ^Canvas canvas size]
   (let [s (:scale ctx)
         {:keys [row-h name-w]} model/layout
-        rows (model/rack song pattern live (live-bars))
+        rows (model/rack song pattern live (actions/live-bars))
         width (/ (:width size) s)
         cw (model/cell-w width)
         step-now (current-step song pattern)]
@@ -329,8 +278,8 @@
            [ui/clickable {:on-click (fn [_] (run! {:cmd :pattern/remove :pattern p}))}
             [ui/label {:paint {:fill (colors :muted)}} "×"]]]]]])
      [ui/button {:on-click (fn [_]
-                             (let [p (model/next-name "pattern" (:patterns @studio/song))]
-                               (run! {:cmd :pattern/add :pattern p})
+                             (let [[p status] (actions/add-pattern!)]
+                               (status! status)
                                (swap! *view assoc :pattern p)))}
       "+ Pattern"]]))
 
@@ -360,19 +309,19 @@
       [ui/column {:gap 6}
        [muted "BUILT-IN"]
        [ui/row {:gap 6}
-        (for [b builtins]
+        (for [b actions/builtins]
           [ui/button {:on-click (fn [_] (add-channel! [:builtin {:voice b}] (name b)))} (name b)])]
        [muted "SAMPLES (macOS sounds and brain/samples/)"]
-       (for [row (partition-all 8 (sample-files))]
+       (for [row (partition-all 8 (actions/sample-files))]
          [ui/row {:gap 6}
           (for [f row
-                :let [n (str/replace (.getName ^java.io.File f) #"\.[^.]+$" "")]]
-            [ui/button {:on-click (fn [_] (add-channel! [:sampler {:sample (str f)}] (str/lower-case n)))} n])])]
+                :let [n (str/replace (.getName (io/file f)) #"\.[^.]+$" "")]]
+            [ui/button {:on-click (fn [_] (add-channel! [:sampler {:sample f}] (str/lower-case n)))} n])])]
 
       :open
       [ui/column {:gap 6}
-       [muted "SONGS IN brain/" songs-dir "/"]
-       (let [folders (song-folders)]
+       [muted "SONGS IN brain/" actions/songs-dir "/"]
+       (let [folders (actions/song-folders)]
          (if (seq folders)
            [ui/row {:gap 6}
             (for [n folders] [ui/button {:on-click (fn [_] (open! n))} n])]

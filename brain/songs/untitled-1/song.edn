@@ -1,0 +1,15 @@
+;; Gorilla Studio song, format 1.
+;; Plain data: opening it evaluates nothing. Live pattern source runs only
+;; when you call (gorilla.live/activate!).
+{:format 1
+ :song {:channels {:hat {:gen [:builtin {:voice :hat}]}
+                   :kick {:gen [:builtin {:voice :kick}]}
+                   :snare {:gen [:builtin {:voice :snare}]}}
+        :mixer {}
+        :patterns {:drums {:steps {:hat [1 0 1 0 0 1 1 0 1 0 1 1 0 0 1 0]
+                                   :kick [1 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0]
+                                   :snare [0 0 0 0 1 0 0 0 0 0 0 0 1 0 0 0]}}}
+        :playlist []
+        :song/bpm 148
+        :song/loop false
+        :song/time-sig [4 4]}}
