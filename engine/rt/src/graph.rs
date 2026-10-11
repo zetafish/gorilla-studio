@@ -64,6 +64,16 @@ pub struct Row {
 #[derive(Debug, PartialEq)]
 pub struct Pattern {
     pub rows: Vec<Row>,
+    /// Whether the playlist has this pattern playing in the current bar.
+    pub active: bool,
+}
+
+/// A pattern placed in the arrangement, in bars.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clip {
+    pub pattern: usize,
+    pub start: u64,
+    pub len: u64,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -76,6 +86,11 @@ pub struct Graph {
     /// For each pattern and row, its (pattern, row) index in the graph this
     /// one replaces.
     pub row_carry: Vec<Vec<Option<(usize, usize)>>>,
+    /// The arrangement. Empty: every pattern loops.
+    pub clips: Vec<Clip>,
+    /// Bars up to the end of the last clip.
+    pub song_bars: u64,
+    pub looping: bool,
 }
 
 impl Graph {
@@ -105,6 +120,32 @@ impl Graph {
         self.patterns.get_mut(pattern)?.rows.get_mut(row)
     }
 
+    /// True when the arrangement has run out at `bar` and doesn't loop.
+    pub fn ended(&self, bar: u64) -> bool {
+        !self.clips.is_empty() && !self.looping && bar >= self.song_bars
+    }
+
+    /// Marks which patterns the arrangement plays in `bar`.
+    pub fn update_active(&mut self, bar: u64) {
+        if self.clips.is_empty() {
+            for pattern in &mut self.patterns {
+                pattern.active = true;
+            }
+            return;
+        }
+        let pos = if self.looping && self.song_bars > 0 {
+            bar % self.song_bars
+        } else {
+            bar
+        };
+        for (i, pattern) in self.patterns.iter_mut().enumerate() {
+            pattern.active = self
+                .clips
+                .iter()
+                .any(|c| c.pattern == i && c.start <= pos && pos < c.start.saturating_add(c.len));
+        }
+    }
+
     pub fn clear_queues(&mut self) {
         for row in self.patterns.iter_mut().flat_map(|p| p.rows.iter_mut()) {
             row.queue.clear();
@@ -126,17 +167,25 @@ impl Graph {
                 }
             }
         }
-        for row in patterns.iter_mut().flat_map(|p| p.rows.iter_mut()) {
-            if let Some(hits) = bar.and_then(|bar| row.queue.take(bar)) {
-                row.hits = hits;
-            }
-            if let Some(Some(hit)) = row.hits.get(step)
-                && let Some(channel) = channels.get_mut(row.channel)
-            {
-                channel
-                    .generator
-                    .trigger(&mut channel.voice, hit.pitch, hit.vel);
-                channel.gate = u16::from(hit.len.max(1));
+        for pattern in patterns.iter_mut() {
+            let active = pattern.active;
+            for row in pattern.rows.iter_mut() {
+                // Queued bars are taken even when the pattern is silent, so
+                // a live row stays in step with the bar count.
+                if let Some(hits) = bar.and_then(|bar| row.queue.take(bar)) {
+                    row.hits = hits;
+                }
+                if !active {
+                    continue;
+                }
+                if let Some(Some(hit)) = row.hits.get(step)
+                    && let Some(channel) = channels.get_mut(row.channel)
+                {
+                    channel
+                        .generator
+                        .trigger(&mut channel.voice, hit.pitch, hit.vel);
+                    channel.gate = u16::from(hit.len.max(1));
+                }
             }
         }
     }

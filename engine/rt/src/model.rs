@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::graph::{
-    BarQueue, Channel, Graph, Hit, Hits, Pattern, Row, STEPS, Steps, hits_from_steps,
+    BarQueue, Channel, Clip, Graph, Hit, Hits, Pattern, Row, STEPS, Steps, hits_from_steps,
 };
 use crate::samples::SampleCache;
 use crate::voice::{Builtin, Generator, Voice};
@@ -47,10 +47,20 @@ pub struct PatternSpec {
     pub rows: Vec<RowSpec>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipSpec {
+    pub pattern: String,
+    pub start: u64,
+    pub len: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Model {
     pub channels: Vec<ChannelSpec>,
     pub patterns: Vec<PatternSpec>,
+    /// The arrangement; empty means every pattern loops.
+    pub clips: Vec<ClipSpec>,
+    pub looping: bool,
 }
 
 const X: bool = true;
@@ -76,6 +86,8 @@ impl Model {
                     generator: GenSpec::Builtin(*kind),
                 })
                 .collect(),
+            clips: Vec::new(),
+            looping: false,
             patterns: vec![PatternSpec {
                 id: "drums".into(),
                 rows: builtins
@@ -177,10 +189,19 @@ impl Model {
             })
     }
 
+    /// Removes a pattern and its clips.
     pub fn remove_pattern(&mut self, pattern: &str) -> bool {
-        let before = self.patterns.len();
+        let before = (self.patterns.len(), self.clips.len());
         self.patterns.retain(|p| p.id != pattern);
-        self.patterns.len() != before
+        self.clips.retain(|c| c.pattern != pattern);
+        (self.patterns.len(), self.clips.len()) != before
+    }
+
+    pub fn set_playlist(&mut self, clips: Vec<ClipSpec>, looping: bool) -> bool {
+        let changed = self.clips != clips || self.looping != looping;
+        self.clips = clips;
+        self.looping = looping;
+        changed
     }
 
     /// Builds a graph for this model. `prev` is the model the current graph
@@ -236,15 +257,43 @@ impl Model {
                 });
                 carries.push(prev.row_index(&pattern.id, &row.id));
             }
-            patterns.push(Pattern { rows });
+            patterns.push(Pattern { rows, active: true });
             row_carry.push(carries);
         }
+
+        let clips = self
+            .clips
+            .iter()
+            .map(|c| {
+                let pattern = self
+                    .patterns
+                    .iter()
+                    .position(|p| p.id == c.pattern)
+                    .ok_or_else(|| format!("clip for unknown pattern {:?}", c.pattern))?;
+                if c.len == 0 || c.start.checked_add(c.len).is_none() {
+                    return Err(format!("clip of {:?} has a bad length", c.pattern));
+                }
+                Ok(Clip {
+                    pattern,
+                    start: c.start,
+                    len: c.len,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let song_bars = clips
+            .iter()
+            .map(|c| c.start.saturating_add(c.len))
+            .max()
+            .unwrap_or(0);
 
         Ok(Graph {
             channels,
             patterns,
             channel_carry,
             row_carry,
+            clips,
+            song_bars,
+            looping: self.looping,
         })
     }
 }

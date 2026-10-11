@@ -26,6 +26,12 @@
 
 (def Notes [:vector {:max 16} Note])
 
+(def Clip
+  [:map {:closed true}
+   [:pattern :keyword]
+   [:start [:int {:min 0}]]
+   [:len [:int {:min 1}]]])
+
 (def Patch
   [:multi {:dispatch :op}
    [:pattern/set-steps
@@ -80,6 +86,11 @@
     [:map {:closed true}
      [:op [:= :song/set-bpm]]
      [:bpm [:double {:min 20.0 :max 999.0}]]]]
+   [:song/set-playlist
+    [:map {:closed true}
+     [:op [:= :song/set-playlist]]
+     [:clips [:vector {:max 4096} Clip]]
+     [:looping :boolean]]]
    [:song/reset
     [:map {:closed true}
      [:op [:= :song/reset]]]]])

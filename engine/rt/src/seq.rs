@@ -112,6 +112,8 @@ impl Sequencer {
         match msg {
             RtMsg::SwapGraph(mut graph) => {
                 graph.carry_from(&self.graph);
+                // The bar in progress: which patterns play in it now.
+                graph.update_active(self.steps_played.saturating_sub(1) / STEPS as u64);
                 let old = std::mem::replace(&mut self.graph, graph);
                 if let Err(PushError::Full(old)) = self.reclaim.push(old) {
                     // Never free on the audio thread. A full reclaim queue
@@ -176,6 +178,14 @@ impl Sequencer {
     fn trigger_step(&mut self) {
         let step = self.step;
         let bar = (step == 0).then(|| self.steps_played / STEPS as u64);
+        if let Some(bar) = bar {
+            if self.graph.ended(bar) {
+                // The arrangement is over: stop, as if transport were pressed.
+                self.set_playing(false);
+                return;
+            }
+            self.graph.update_active(bar);
+        }
         self.graph.trigger_step(step, bar);
         self.step = (step + 1) % STEPS;
         self.steps_played = self.steps_played.saturating_add(1);
@@ -457,6 +467,77 @@ mod tests {
             seq.graph.channels.first().map(|c| c.gate),
             Some(0),
             "released on step 3"
+        );
+    }
+
+    fn arranged(clips: &[(usize, u64, u64)], looping: bool) -> Sequencer {
+        let mut seq = sequencer();
+        let mut graph = Model::default_drums()
+            .build(&Model::default(), SR, &mut SampleCache::default())
+            .unwrap_or_default();
+        // A second pattern, "fills": all hats.
+        graph.patterns.push(crate::graph::Pattern {
+            rows: vec![crate::graph::Row {
+                channel: 2,
+                hits: hits_from_steps(&ALL),
+                queue: Default::default(),
+            }],
+            active: true,
+        });
+        graph.clips = clips
+            .iter()
+            .map(|&(pattern, start, len)| crate::graph::Clip {
+                pattern,
+                start,
+                len,
+            })
+            .collect();
+        graph.song_bars = graph
+            .clips
+            .iter()
+            .map(|c| c.start + c.len)
+            .max()
+            .unwrap_or(0);
+        graph.looping = looping;
+        seq.apply(RtMsg::SwapGraph(Box::new(graph)));
+        seq
+    }
+
+    fn active(seq: &Sequencer) -> Vec<bool> {
+        seq.graph.patterns.iter().map(|p| p.active).collect()
+    }
+
+    #[test]
+    fn the_playlist_picks_patterns_per_bar_and_stops_at_the_end() {
+        let mut seq = arranged(&[(0, 0, 2), (1, 1, 2)], false);
+        render(&mut seq, 1);
+        assert_eq!(active(&seq), [true, false]);
+        render(&mut seq, BAR);
+        assert_eq!(active(&seq), [true, true], "bar 1: both");
+        render(&mut seq, BAR);
+        assert_eq!(active(&seq), [false, true], "bar 2: fills only");
+        render(&mut seq, BAR);
+        assert!(!seq.playing, "stopped at the end of bar 2");
+        assert_eq!(seq.steps_played, 3 * 16);
+    }
+
+    #[test]
+    fn a_looping_playlist_starts_over() {
+        let mut seq = arranged(&[(0, 0, 1), (1, 1, 1)], true);
+        render(&mut seq, 2 * BAR + 1);
+        assert!(seq.playing);
+        assert_eq!(active(&seq), [true, false], "bar 2 plays like bar 0");
+    }
+
+    #[test]
+    fn an_inactive_pattern_is_silent() {
+        let mut seq = arranged(&[(1, 4, 1)], false);
+        set_all(&mut seq, ALL);
+        let out = render(&mut seq, BAR);
+        assert_eq!(
+            peak(&out),
+            0.0,
+            "drums have no clip in bar 0, fills start at bar 4"
         );
     }
 

@@ -28,6 +28,9 @@ pub const MAX_NOTES: usize = PATTERN_STEPS;
 /// Longest note, in steps (four bars).
 pub const MAX_NOTE_LEN: u8 = 64;
 
+/// Most clips a playlist can hold.
+pub const MAX_CLIPS: usize = 4096;
+
 /// Tempo range the engine accepts, in beats per minute.
 pub const MIN_BPM: f64 = 20.0;
 pub const MAX_BPM: f64 = 999.0;
@@ -98,6 +101,12 @@ pub enum Patch {
     /// Tempo, kept on the bar grid: the position in the bar doesn't jump.
     #[serde(rename = "song/set-bpm")]
     SetBpm { bpm: f64 },
+    /// Replace the arrangement. With no clips every pattern loops, as before
+    /// there was a playlist. With clips, a pattern plays in the bars its
+    /// clips cover; after the last clip playback stops, or starts over when
+    /// `looping`.
+    #[serde(rename = "song/set-playlist")]
+    SetPlaylist { clips: Vec<Clip>, looping: bool },
     /// Forget every channel and pattern. A full snapshot starts with this, so
     /// the engine ends up with exactly the brain's song. Channels and rows that
     /// come back in the same envelope keep playing without a cut.
@@ -119,6 +128,7 @@ impl Patch {
             Patch::SetChannel { .. } => "channel/set",
             Patch::RemoveChannel { .. } => "channel/remove",
             Patch::SetBpm { .. } => "song/set-bpm",
+            Patch::SetPlaylist { .. } => "song/set-playlist",
             Patch::Reset => "song/reset",
         }
     }
@@ -134,6 +144,16 @@ pub struct Note {
     pub len: u8,
     pub pitch: u8,
     pub vel: f64,
+}
+
+/// A pattern placed in the arrangement: bars `start` up to `start + len`,
+/// counted from the start of playback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Clip {
+    pub pattern: String,
+    pub start: u64,
+    pub len: u64,
 }
 
 /// What a channel plays.
@@ -294,6 +314,21 @@ pub fn examples() -> Vec<Envelope> {
             channel: "clap".into(),
         },
         Patch::SetBpm { bpm: 128.5 },
+        Patch::SetPlaylist {
+            clips: vec![
+                Clip {
+                    pattern: "intro".into(),
+                    start: 0,
+                    len: 8,
+                },
+                Clip {
+                    pattern: "drop".into(),
+                    start: 8,
+                    len: 16,
+                },
+            ],
+            looping: true,
+        },
         Patch::Reset,
     ];
     ops.into_iter()
@@ -386,6 +421,12 @@ pub fn malli_schema() -> String {
 
 (def Notes [:vector {{:max {MAX_NOTES}}} Note])
 
+(def Clip
+  [:map {{:closed true}}
+   [:pattern :keyword]
+   [:start [:int {{:min 0}}]]
+   [:len [:int {{:min 1}}]]])
+
 (def Patch
   [:multi {{:dispatch :op}}
    [:pattern/set-steps
@@ -440,6 +481,11 @@ pub fn malli_schema() -> String {
     [:map {{:closed true}}
      [:op [:= :song/set-bpm]]
      [:bpm [:double {{:min {MIN_BPM:?} :max {MAX_BPM:?}}}]]]]
+   [:song/set-playlist
+    [:map {{:closed true}}
+     [:op [:= :song/set-playlist]]
+     [:clips [:vector {{:max {MAX_CLIPS}}} Clip]]
+     [:looping :boolean]]]
    [:song/reset
     [:map {{:closed true}}
      [:op [:= :song/reset]]]]])

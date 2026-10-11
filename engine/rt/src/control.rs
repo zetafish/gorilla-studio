@@ -19,7 +19,7 @@ use gorilla_proto::{Envelope, HEADER_BYTES, Patch, Telemetry};
 use rtrb::Producer;
 
 use crate::graph::Hits;
-use crate::model::{GenSpec, Model, hits_from_notes, hits_from_wire_steps};
+use crate::model::{ClipSpec, GenSpec, Model, hits_from_notes, hits_from_wire_steps};
 use crate::samples::SampleCache;
 use crate::seq::{Playhead, RtMsg};
 
@@ -280,6 +280,20 @@ impl Control {
                         return Err(format!("bpm {bpm} out of range"));
                     }
                     pending.push(Pending::Tempo(*bpm as f32));
+                }
+                Patch::SetPlaylist { clips, looping } => {
+                    if clips.len() > gorilla_proto::MAX_CLIPS {
+                        return Err(format!("{} clips", clips.len()));
+                    }
+                    let clips = clips
+                        .iter()
+                        .map(|c| ClipSpec {
+                            pattern: c.pattern.clone(),
+                            start: c.start,
+                            len: c.len,
+                        })
+                        .collect();
+                    reshaped |= next.set_playlist(clips, *looping);
                 }
                 Patch::Reset => {
                     next = Model::default();
@@ -700,6 +714,35 @@ mod tests {
             notes: vec![note(16, 31)],
         }]);
         assert!(apply(&mut control, &bad).is_err());
+    }
+
+    #[test]
+    fn the_playlist_is_part_of_the_graph() {
+        let (mut control, mut rx) = control(8);
+        let clip = |pattern: &str, start, len| gorilla_proto::Clip {
+            pattern: pattern.into(),
+            start,
+            len,
+        };
+        let playlist = |clips| {
+            envelope(vec![Patch::SetPlaylist {
+                clips,
+                looping: true,
+            }])
+        };
+        assert!(apply(&mut control, &playlist(vec![clip("drums", 4, 8)])).is_ok());
+        assert!(matches!(rx.pop(), Ok(RtMsg::SwapGraph(g)) if g.song_bars == 12 && g.looping));
+        assert!(apply(&mut control, &playlist(vec![clip("nope", 0, 1)])).is_err());
+        assert!(apply(&mut control, &playlist(vec![clip("drums", 0, 0)])).is_err());
+        assert!(apply(&mut control, &playlist(vec![clip("drums", u64::MAX, 2)])).is_err());
+        let remove = envelope(vec![Patch::RemovePattern {
+            pattern: "drums".into(),
+        }]);
+        assert!(apply(&mut control, &remove).is_ok());
+        assert!(
+            control.model.clips.is_empty(),
+            "the pattern's clips went with it"
+        );
     }
 
     #[test]
