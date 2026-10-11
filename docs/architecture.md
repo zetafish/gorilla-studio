@@ -61,16 +61,19 @@ Song changes flow down as validated **patches**; meters, playhead and scopes flo
  :patterns {:drums {:steps {:kick  [1 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0]
                             :hat   (euclid 5 16)          ; materialized on save
                             :snare [0 0 0 0 1 0 0 0 0 0 0 0 1 0 0 0]}}
-            :lead  {:notes [{:t 0   :len 1/4 :pitch 67 :vel 0.8}
-                            {:t 1/2 :len 1/4 :pitch 70 :vel 0.7}]}}
- :channels {:kick  {:gen [:sampler {:sample "kick-01.wav"}] :mixer 1}
-            :lead  {:gen [:plugin {:format :clap :id "com.example.synth"}] :mixer 2}}
- :playlist [{:pattern :drums :track 0 :start 0 :len 16}
+            :lead  {:notes {:lead [{:t 0 :len 4 :pitch 67 :vel 0.8}     ; times in steps
+                                   {:t 8 :len 4 :pitch 70 :vel 0.7}]}}}
+ :channels {:kick  {:gen [:sampler {:sample "assets/kick-01.wav"}] :mixer 1}
+            :lead  {:gen [:builtin {:voice :lead}] :mixer 2}}  ; later [:plugin {...}]
+ :playlist [{:pattern :drums :track 0 :start 0 :len 16}         ; in bars
             {:pattern :lead  :track 1 :start 8 :len 8}]
+ :song/loop true
  :mixer {1 {:vol 0.9 :fx [[:eq {}] [:comp {}]] :send {:reverb 0.2}}
          2 {:vol 0.7 :fx [[:reverb {:size 0.8}]]}}}
 ```
 
+- **Rows** are named after the channel they play. A row holds either steps (16 on/off) or notes: `{:t step :len steps :pitch midi :vel 0..1}`, one note starting per step, `:len` up to 64 steps. Each channel plays one note at a time; a note holds for `:len` steps, then releases.
+- **Playlist:** clips place patterns on the timeline in bars. With no clips every pattern loops; with clips a pattern plays only in the bars its clips cover, and playback stops after the last clip unless `:song/loop` is true. `:track` is a display lane only.
 - **Saving:** a song is a folder: `song.edn` holds `{:format 1 :song <this value> :live {...}}` and `assets/` holds a copy of every sample, referenced by relative path. The EDN is written in a fixed layout (sorted keys, one row per line) so it diffs and merges cleanly in git; saving twice gives identical bytes. Opening reads it with `clojure.edn` (no eval, no reader tags) and validates it before anything changes. `gorilla.file` has `save!` and `open!`.
 - **Undo:** `(swap! history conj @song)`. Structural sharing keeps every version cheap.
 - **Validation:** one malli schema for the whole song. Every command's result is checked before it's committed.
@@ -104,6 +107,7 @@ The engine never sees EDN. A watch on the song atom diffs old and new values and
 - **Wire format:** each message is a 4-byte big-endian length and a MessagePack map, at most 64 KiB. Ops are maps tagged by `:op` (a serde internally tagged enum). Keywords travel as strings holding their full name, so `:pattern/set-steps` is `"pattern/set-steps"`.
 - **Transport:** TCP on loopback, `127.0.0.1:7878` by default (`GORILLA_ENGINE_ADDR` overrides it). Chosen over Unix sockets because it works the same on macOS, Linux, Windows and the JVM. One brain connects at a time; the protocol has no authentication, so it must stay on loopback.
 - **Song shape:** `:channel/set` (a builtin voice or a sampler with an absolute path), `:channel/remove` (also removes the rows that play it), `:pattern/set-steps` (creates the pattern and row on first use), `:pattern/remove-row`, `:pattern/remove`, `:song/set-bpm` and `:song/reset`. A row plays the channel with the same id, as in a channel rack. A full snapshot starts with `:song/reset`, so the engine ends up with exactly the brain's song; channels that survive the reset keep ringing.
+- **Notes and arrangement:** `:pattern/set-notes` and `:pattern/schedule-notes` carry notes; the engine turns step rows and note rows into the same per-step hits (pitch, velocity, length). `:song/set-playlist` sends the whole arrangement (clips and looping); the engine decides at each bar line which patterns play, and stops at the end of a non-looping arrangement.
 - **Cross-check:** `gorilla_proto::examples()` encodes one envelope per patch type into `brain/test/resources/proto-examples.bin` (golden-tested on the Rust side), and a brain test validates each against the generated malli schema.
 - **Transport** (`{:op :transport/set :playing false}`) is engine state, not song data: it isn't saved, isn't undone and doesn't advance the epoch, so it's sent directly rather than through the differ. Stopping lets ringing voices decay; playing restarts at step 0.
 - **Telemetry** comes back on the same socket, framed the same way: `{:op :engine/hello :engine-id 123 :epoch 41}` once per connection, then `{:op :engine/playhead :epoch 41 :playing true :bar 12 :step 3}` about 60 times a second. The engine id is random per engine process, so a reconnecting brain can tell whether the engine still holds the song it sent. When the engine refuses an envelope it sends `{:op :engine/rejected :epoch 41 :reason "..." :ops ["pattern/set-steps"]}`; the op names let the brain tell a rejected song change (resync) from a rejected live op (log it).
@@ -154,8 +158,11 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
 - **Lookahead:** a scheduler (`gorilla.live`) watches the engine's playhead and evaluates each live pattern for the next 2 bars, sending the concrete steps as `:pattern/schedule-bar` patches. The engine switches rows exactly on the bar line; if the brain goes away, the last bar keeps looping.
 - **Live output is not song data.** Earlier drafts wrote each generated bar into the song value. That would push a new song onto the undo history every bar and make the differ resend rows constantly, so generated bars go straight to the engine instead, like transport. The song keeps its own static rows; removing a live pattern sends the song's row back.
 - **Quantized edits:** redefining a pattern re-sends the bars already queued, so the change lands on the next bar line.
+- **Steps or notes:** a pattern function returns anything `steps` accepts, or a seq of notes. `gorilla.pattern` has step generators (`euclid`, `chance`, ...) and melodic ones (`note`, `scale`, `degree`, `chord`, `markov-walk`, `rhythm`, `transpose`).
+- **Time budget:** each pattern renders a bar on a worker thread with 100 ms to finish. One that runs over is stopped (and logged) until it's redefined; the others keep going. The JVM can't kill a thread, so code that never yields may keep a core busy until it finishes.
+- **Undo:** replacing the whole song (`new-song!`, `open!`) records the live patterns and the samples folder with the history entry, so undo brings them back with the song.
 - **Starting playback** sends the transport op and the first bars in one envelope, so live rows are right from bar 0.
-- **Safe files:** each live pattern is saved as its source string plus 16 materialized bars. Opening evaluates nothing: live rows come back frozen and loop their saved bars. `(gorilla.live/activate!)` runs the saved source again in SCI, with pure `clojure.core` plus the `gorilla.pattern` generators, no I/O, no Java interop, no threads; a pattern whose source fails stays frozen.
+- **Safe files:** each live pattern is saved as its source string plus 32 materialized bars and `:loop-from`, the bar where they start repeating (found when saving). Opening evaluates nothing: live rows come back frozen, play their saved bars once, then loop from `:loop-from`. `(gorilla.live/activate!)` runs the saved source again in SCI, with pure `clojure.core` plus the `gorilla.pattern` generators, no I/O, no Java interop, no threads; a pattern whose source fails stays frozen.
 - **Expressions** inside the song run in SCI (sandboxed, no I/O). So far that means live pattern source; anything else that runs from a file will use the same sandbox.
 
 ## 6. UI = f(song)

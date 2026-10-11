@@ -11,7 +11,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the design, [`docs/roadma
 
 ## Status
 
-Milestones 1–5 are done: the two-process slice, telemetry with resync, live patterns, an engine driven by the song (channels, samples, tempo, graph swaps), and saving and opening songs. Next is milestone 6, melody and arrangement. Details in the [roadmap](docs/roadmap.md).
+Milestones 1–6 are done: the two-process slice, telemetry with resync, live patterns, an engine driven by the song (channels, samples, tempo, graph swaps), saving and opening songs, and melody with an arrangement. Next is milestone 7, mixer and effects. Details in the [roadmap](docs/roadmap.md).
 
 ## Try it
 
@@ -40,6 +40,13 @@ Then, in the REPL (helpers live in `brain/dev/user.clj`):
 (row! :fills :pop "xxxx............")               ; a second pattern, looping too
 (remove-channel! :pop)
 (rejection)         ; the engine's last refusal, if any
+
+(require 'songs.night :reload) (songs.night/start!)   ; arranged, melodic
+(channel! :bass :bass)                                ; built-in synths: :bass, :lead
+(notes! :low :bass (rhythm [1/4 1/8 1/8 1/2] [:a1 :a1 :c2 :e2]))
+(defpattern :low :bass
+  (fn [bar] (rhythm [1/8] (markov-walk {:seed bar :len 8 :scale (scale :a1 :minor)}))))
+(arrange! [[:drums 0 8] [:low 4 12]]) (loop! true)    ; [pattern start-bar bars]
 
 (save! "songs/my-beat")   ; a folder: song.edn plus assets/
 (open! "songs/my-beat")   ; live patterns come back frozen

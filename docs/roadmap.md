@@ -15,8 +15,8 @@ When a milestone finishes or a gap is closed, update this file in the same chang
 | 3 | Live patterns | Done |
 | 4 | The song drives the engine | Done |
 | 5 | Save and load | Done |
-| 6 | Melody and arrangement | **Next** |
-| 7 | Mixer and effects | Planned |
+| 6 | Melody and arrangement | Done, pending your listening test |
+| 7 | Mixer and effects | **Next** |
 | 8 | Desktop UI | Planned |
 | 9 | Agent access (MCP) | Planned |
 | 10 | Offline export | Planned |
@@ -79,18 +79,19 @@ Prove the two-process design end to end.
 
 **Done when:** save, quit both processes, open again, and it sounds the same; a file with live-pattern source opens without running it; the file diffs cleanly in git.
 
-## Next
-
 ### 6. Melody and arrangement
 
-- Note patterns: `{:t :len :pitch :vel}` notes alongside step rows, with pitched generators.
-- Melodic live helpers: `scale`, `markov-walk`, `rhythm`.
-- The playlist: patterns placed on tracks over bars, and the engine plays the arrangement, not just loops.
-- Live patterns run with a time budget, so a slow pattern can't hold up the others.
+- **Notes:** a row holds steps or notes (`{:t :len :pitch :vel}`, times in sixteenths). The engine turns both into per-step hits; a channel holds a note for its length, then releases it.
+- **Synths:** built-in `:bass` and `:lead` (band-limited saws, filter and envelope). Samplers follow pitch (60 plays as recorded) and velocity.
+- **Melodic generators:** `note`, `scale`, `degree`, `chord`, `markov-walk`, `rhythm`, `transpose`; live patterns may return notes.
+- **Playlist:** clips of patterns over bars. The engine picks the patterns for each bar, and stops after the last clip or loops (`:song/loop`). No clips: every pattern loops, as before.
+- **Closed gaps:** live patterns run on worker threads with a 100 ms budget per bar; undo after `new-song!` or `open!` restores live patterns and the samples folder; saving keeps 32 bars and where they start repeating, so a frozen intro plays once.
+- **Fixed:** opening a second song whose samples had the same relative paths kept the first song's samples; the brain now diffs resolved paths.
+- `songs.night`: an arranged A-minor song with a walking bass and a tune.
 
 **Done when:** a live melodic pattern plays in key over a drum loop; an arrangement of several patterns plays start to finish.
 
-## Planned
+## Next
 
 ### 7. Mixer and effects
 
@@ -99,6 +100,8 @@ Prove the two-process design end to end.
 - Meters in telemetry. Move telemetry to shared memory if meters and scopes need the bandwidth.
 
 **Done when:** sweeping a filter cutoff from the REPL is smooth (no zipper noise); adding an effect while playing makes no click.
+
+## Planned
 
 ### 8. Desktop UI
 
@@ -142,14 +145,14 @@ Things that work but aren't finished, with the milestone that should close each 
 | Gap | Why it matters | Close in |
 |---|---|---|
 | The malli schema is rendered by hand in `gorilla_proto::malli_schema()` | The examples cross-check catches drift in field names and types, but a derive (or `schemars`) would remove the hand-written half | Any |
-| Every pattern loops at once | There's no arrangement yet | 6 |
 | A retriggered sample restarts without a fade | Can click on long samples | 7 |
 | Decoded samples are never evicted from the cache | Memory grows if you swap through many samples | 7 |
 | The engine starts at 120 BPM until a brain sends the song | Only matters before the first connect | Any |
 | `symphonia` is MPL-2.0 | Not banned (file-level copyleft), but not MIT/Apache either; `hound` (Apache-2.0) covers WAV if that ever matters | Any |
-| A slow live pattern delays the others (they share the scheduler thread), and sandboxed source has no time limit either | Two bars of lookahead hide it for now; an endless loop in activated source would stall the scheduler | 6 |
-| Undo restores the song but not live patterns | `new-song!` or `open!` then undo brings back the rows, not the patterns that played them | 6 |
-| A frozen pattern loops only its first 16 saved bars | An 8-bar intro replays every 16 bars until you `activate!` | 6 |
+| A live pattern stopped for running over budget may keep a thread busy | The JVM can't kill a thread; pure code that never yields runs until it finishes | Any |
+| Each channel plays one note at a time | No chords on one channel yet; use one channel per voice | 7 |
+| Sampler root pitch is fixed at 60 | A sample recorded at another pitch plays out of tune with synths | 7 |
+| The playhead reports bars since play, not the position in the arrangement | Fine for live patterns; a UI will want both | 8 |
 | Telemetry is a socket stream, not shared memory | Enough for the playhead; maybe not for scopes and spectra | 7 |
 | Auto-restart runs `cargo run` from `../engine` | Works only from a dev checkout | 8 |
 | `msgpack-core` needs `--sun-misc-unsafe-memory-access=allow` on JDK 24+ | A future JDK may remove the API; a small built-in encoder would drop the dependency | Any |
