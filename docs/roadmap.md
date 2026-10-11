@@ -15,7 +15,7 @@ When a milestone finishes or a gap is closed, update this file in the same chang
 | 3 | Live patterns | Done |
 | 4 | The song drives the engine | Done |
 | 5 | Save and load | Done |
-| 6 | Melody and arrangement | Done, pending your listening test |
+| 6 | Melody and arrangement | Done |
 | 7 | Mixer and effects | **Next** |
 | 8 | Desktop UI | Planned |
 | 9 | Agent access (MCP) | Planned |
