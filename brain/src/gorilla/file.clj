@@ -40,7 +40,7 @@
     [:map-of [:tuple :keyword :keyword]
      [:map {:closed true}
       [:source :string]
-      [:bars [:vector {:min 1 :max 1024} song/Steps]]]]]])
+      [:bars [:vector {:min 1 :max 1024} [:or song/Steps song/Notes]]]]]]])
 
 (defonce ^{:doc "Folder of the song last opened or saved."} current (atom nil))
 
@@ -178,7 +178,7 @@
         (throw (ex-info "The song in the file is invalid"
                         {:errors (me/humanize errors)})))
       (doseq [[[pattern row]] (:live data)
-              :when (not (get-in data [:song :patterns pattern :steps row]))]
+              :when (not (some #{row} (map first (song/rows (get-in data [:song :patterns pattern])))))]
         (throw (ex-info (str "Live pattern for missing row " [pattern row]) {})))
       data)))
 

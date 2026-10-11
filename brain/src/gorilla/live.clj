@@ -27,13 +27,25 @@
 
 ;; --- Planning (pure) ----------------------------------------------------------
 
+(defn- row-exists? [pattern row]
+  (let [p (get-in @studio/song [:patterns pattern])]
+    (boolean (or (get-in p [:steps row]) (get-in p [:notes row])))))
+
 (defn- render-bar
-  "Steps for `bar`, or an error message."
+  "What `f` plays in `bar`: {:steps [...]} or {:notes [...]}, or {:error msg}."
   [f bar]
   (try
-    {:steps (p/steps (f bar))}
+    (let [x (f bar)]
+      (if (p/notes? x)
+        {:notes (p/notes x)}
+        {:steps (p/steps x)}))
     (catch Throwable e
       {:error (str (.getSimpleName (class e)) ": " (ex-message e))})))
+
+(defn- bar-data
+  "A rendered bar as saved: steps vector or notes vector."
+  [{:keys [steps notes]}]
+  (or notes steps))
 
 (defn plan
   "What to send so the engine has bars `from`..`to` (inclusive) of every live
@@ -44,15 +56,20 @@
    (fn [acc [[pattern row] {:keys [f]}]]
      (reduce
       (fn [acc bar]
-        (let [{:keys [steps error]} (render-bar f bar)
-              k [pattern row bar]]
+        (let [{:keys [steps notes error] :as rendered} (render-bar f bar)
+              k [pattern row bar]
+              data (bar-data rendered)]
           (cond
             error (assoc-in acc [:errors [pattern row]] error)
-            (= steps (get sent k)) acc
+            (= data (get sent k)) acc
             :else (-> acc
-                      (update :ops conj {:op :pattern/schedule-bar :pattern pattern
-                                         :row row :bar bar :steps steps})
-                      (assoc-in [:sent k] steps)))))
+                      (update :ops conj
+                              (if notes
+                                {:op :pattern/schedule-notes :pattern pattern :row row :bar bar
+                                 :notes notes}
+                                {:op :pattern/schedule-bar :pattern pattern :row row :bar bar
+                                 :steps steps}))
+                      (assoc-in [:sent k] data)))))
       acc
       (range from (inc to))))
    {:ops [] :errors {} :sent (into {} (filter (fn [[[_ _ bar] _]] (>= bar from))) sent)}
@@ -87,8 +104,7 @@
                    {}
                    sent)
             ;; A live row removed from the song has nowhere to play.
-            live (into {} (filter (fn [[[pattern row]]]
-                                    (get-in @studio/song [:patterns pattern :steps row])))
+            live (into {} (filter (fn [[[pattern row]]] (row-exists? pattern row)))
                        @patterns)
             result (plan live sent (inc bar) (+ bar lookahead-bars))]
         (report-errors! errors (:errors result))
@@ -120,7 +136,7 @@
 ;; --- API ----------------------------------------------------------------------
 
 (defn- install! [pattern row entry]
-  (when-not (get-in @studio/song [:patterns pattern :steps row])
+  (when-not (row-exists? pattern row)
     (throw (ex-info (str "No row " row " in pattern " pattern) {:pattern pattern :row row})))
   (let [{:keys [error]} (render-bar (:f entry) 0)]
     (when error
@@ -153,7 +169,7 @@
         (map (fn [[k {:keys [f source frozen]}]]
                [k {:source source
                    :bars (or frozen
-                             (mapv #(or (:steps (render-bar f %))
+                             (mapv #(or (bar-data (render-bar f %))
                                         (p/steps []))
                                    (range n)))}]))
         @patterns))
@@ -172,8 +188,13 @@
      (swap! patterns dissoc [pattern row])
      (swap! state update :sent #(into {} (remove (fn [[[p r _] _]] (= [p r] [pattern row]))) %))
      (when (engine/connected?)
-       (engine/send-live! [{:op :pattern/set-steps :pattern pattern :row row
-                            :steps (get-in @studio/song [:patterns pattern :steps row])}])))
+       (let [p (get-in @studio/song [:patterns pattern])]
+         (engine/send-live!
+          [(if-let [notes (get-in p [:notes row])]
+             {:op :pattern/set-notes :pattern pattern :row row
+              :notes (mapv #(update % :vel double) notes)}
+             {:op :pattern/set-steps :pattern pattern :row row
+              :steps (get-in p [:steps row])})]))))
    [pattern row]))
 
 (defn play!

@@ -53,3 +53,16 @@
                    {:cmd :channel/remove :channel :snare}
                    {:cmd :song/set-bpm :bpm 90})]
       (is (m/validate proto/Envelope {:epoch 1 :ops (diff/diff s new)})))))
+
+(deftest note-rows-become-set-notes
+  (let [song (run s {:cmd :channel/set :channel :bass :gen [:builtin {:voice :bass}]}
+                  {:cmd :pattern/set-notes :pattern :low :row :bass
+                   :notes [{:t 0 :len 4 :pitch 33 :vel 1}]})
+        ops (diff/diff s song)]
+    (is (= {:op :pattern/set-notes :pattern :low :row :bass
+            :notes [{:t 0 :len 4 :pitch 33 :vel 1.0}]}
+           (last ops)) "velocity goes out as a double")
+    (is (m/validate proto/Envelope {:epoch 1 :ops ops}))
+    (testing "turning a steps row into notes is one op, not a removal"
+      (is (= [{:op :pattern/set-notes :pattern :drums :row :hat :notes []}]
+             (diff/diff s (run s {:cmd :pattern/set-notes :pattern :drums :row :hat :notes []})))))))

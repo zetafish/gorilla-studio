@@ -27,6 +27,13 @@
     (remove-row! :pop) (remove-channel! :pop)
     (new-song!)         ; empty song, live patterns cleared (undo restores the song)
 
+  Melody (notes are {:t step :len steps :pitch midi :vel 0..1}):
+
+    (channel! :bass :bass)                ; built-in synths: :bass and :lead
+    (notes! :low :bass (rhythm [1/4 1/8 1/8 1/2] [:a1 :a1 :c2 :e2]))
+    (defpattern :low :bass
+      (fn [bar] (rhythm [1/8] (markov-walk {:seed bar :len 8 :scale (scale :a1 :minor)}))))
+
   Songs on disk (a folder: song.edn plus assets/):
 
     (save! \"songs/dnb\")  ; later just (save!)
@@ -37,7 +44,9 @@
             [gorilla.engine :as engine]
             [gorilla.file :as file]
             [gorilla.live :as live :refer [defpattern]]
-            [gorilla.pattern :as pattern :refer [steps euclid rotate invert overlay mask chance every]]
+            [gorilla.pattern :as pattern :refer [steps euclid rotate invert overlay mask chance every
+                                                 note scale degree chord markov-walk rhythm
+                                                 transpose]]
             [gorilla.song]
             [gorilla.studio :as studio]))
 
@@ -117,6 +126,13 @@
   ([pattern channel steps]
    (dispatch! (cond-> {:cmd :pattern/add-row :pattern pattern :row channel}
                 steps (assoc :steps (steps* steps))))))
+
+(defn notes!
+  "Sets a notes row (creating it, and its pattern, if needed). `notes` are
+  normalized: (notes! :low :bass [{:t 0 :len 4 :pitch :a1}])."
+  [pattern channel notes]
+  (dispatch! {:cmd :pattern/set-notes :pattern pattern :row channel
+              :notes (pattern/notes notes)}))
 
 (defn remove-row!
   ([channel] (remove-row! :drums channel))

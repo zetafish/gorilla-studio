@@ -71,13 +71,18 @@
   (fn [song {:keys [channel gen]}]
     (assoc-in song [:channels channel :gen] gen)))
 
+(defn- remove-row [pattern row]
+  (cond-> pattern
+    (:steps pattern) (update :steps dissoc row)
+    (:notes pattern) (update :notes dissoc row)))
+
 (defcommand :channel/remove
   {:params [:map [:channel :keyword]]
    :label "Remove channel"}
   (fn [song {:keys [channel]}]
     (-> song
         (update :channels dissoc channel)
-        (update :patterns update-vals #(update % :steps dissoc channel)))))
+        (update :patterns update-vals #(remove-row % channel)))))
 
 (defcommand :pattern/add-row
   {:params [:map [:pattern :keyword] [:row :keyword] [:steps {:optional true} song/Steps]]
@@ -92,7 +97,9 @@
   {:params [:map [:pattern :keyword] [:row :keyword]]
    :label "Remove row"}
   (fn [song {:keys [pattern row]}]
-    (update-in song [:patterns pattern :steps] dissoc row)))
+    (if (get-in song [:patterns pattern])
+      (update-in song [:patterns pattern] remove-row row)
+      song)))
 
 (defcommand :pattern/remove
   {:params [:map [:pattern :keyword]]
@@ -107,3 +114,15 @@
   ;; whole. Undo brings the previous song back.
   (fn [_ {:keys [song]}]
     song))
+
+(defcommand :pattern/set-notes
+  {:params [:map [:pattern :keyword] [:row :keyword] [:notes song/Notes]]
+   :label "Set notes"}
+  ;; Creates the row (and pattern) if needed; a steps row becomes a notes row.
+  (fn [song {:keys [pattern row notes]}]
+    (when-not (get-in song [:channels row])
+      (throw (ex-info (str "No channel " row " for the row to play") {:row row})))
+    (-> (if (get-in song [:patterns pattern :steps row])
+          (update-in song [:patterns pattern :steps] dissoc row)
+          song)
+        (assoc-in [:patterns pattern :notes row] notes))))

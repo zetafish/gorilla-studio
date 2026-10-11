@@ -11,3 +11,6 @@
 
 (deftest every-row-needs-a-channel
   (is (not (song/valid? (update song/default-song :channels dissoc :hat)))))
+
+(deftest a-row-holds-steps-or-notes
+  (is (not (song/valid? (assoc-in song/default-song [:patterns :drums :notes :kick] [])))))

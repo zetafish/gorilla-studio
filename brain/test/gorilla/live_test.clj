@@ -37,6 +37,14 @@
       (let [loud {[:drums :hat] {:f (constantly all)}}]
         (is (= [3 4] (map :bar (:ops (live/plan loud sent 3 4)))))))))
 
+(deftest plan-sends-notes-for-melodic-patterns
+  (let [lead {[:melody :lead] {:f (fn [bar] (p/rhythm [1/4] [(+ 60 bar)]))}}
+        {:keys [ops]} (live/plan lead {} 2 2)]
+    (is (= [{:op :pattern/schedule-notes :pattern :melody :row :lead :bar 2
+             :notes [{:t 0 :len 4 :pitch 62 :vel 0.8} {:t 4 :len 4 :pitch 62 :vel 0.8}
+                     {:t 8 :len 4 :pitch 62 :vel 0.8} {:t 12 :len 4 :pitch 62 :vel 0.8}]}]
+           ops))))
+
 (deftest plan-reports-failing-patterns-and-skips-them
   (let [{:keys [ops errors]} (live/plan {[:drums :hat] {:f (fn [bar] (if (= bar 4) (/ 1 0) "x..."))}
                                          [:drums :kick] {:f (constantly "x...")}}

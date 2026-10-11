@@ -1,5 +1,6 @@
 (ns gorilla.diff
-  "Turns song changes into the smallest list of engine patches.")
+  "Turns song changes into the smallest list of engine patches."
+  (:require [gorilla.song :as song]))
 
 (defn- generator->wire [[kind opts]]
   (assoc opts :type kind))
@@ -9,10 +10,10 @@
   result is a full snapshot: it starts with `:song/reset`, so the engine ends
   up with exactly `new`."
   [old new]
-  (let [rows (fn [song]
-               (for [[pattern {:keys [steps]}] (sort-by key (:patterns song))
-                     [row row-steps] (sort-by key steps)]
-                 [[pattern row] row-steps]))
+  (let [rows (fn [s]
+               (for [[pattern p] (sort-by key (:patterns s))
+                     [row content] (sort-by first (song/rows p))]
+                 [[pattern row] content]))
         old-rows (into {} (rows old))
         new-rows (rows new)
         new-row? (set (map first new-rows))]
@@ -24,9 +25,12 @@
       (for [[channel {:keys [gen]}] (sort-by key (:channels new))
             :when (not= gen (get-in old [:channels channel :gen]))]
         {:op :channel/set :channel channel :generator (generator->wire gen)})
-      (for [[[pattern row] steps] new-rows
-            :when (not= steps (old-rows [pattern row]))]
-        {:op :pattern/set-steps :pattern pattern :row row :steps steps})
+      (for [[[pattern row] {:keys [steps notes] :as content}] new-rows
+            :when (not= content (old-rows [pattern row]))]
+        (if steps
+          {:op :pattern/set-steps :pattern pattern :row row :steps steps}
+          {:op :pattern/set-notes :pattern pattern :row row
+           :notes (mapv #(update % :vel double) notes)}))
       (for [[[pattern row]] (sort-by key old-rows)
             :when (and (not (new-row? [pattern row]))
                        (contains? (:patterns new) pattern)

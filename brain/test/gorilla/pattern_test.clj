@@ -37,3 +37,39 @@
 
 (deftest every-nth-bar
   (is (= [:a :b :b :b :a] (map #(p/every 4 % :a :b) (range 5)))))
+
+(deftest note-names
+  (is (= [60 69 54 46 61 0] (map p/note [:c4 :a4 :f#3 :bb2 :cs4 :c-1])))
+  (is (= 64 (p/note 64)))
+  (is (thrown? clojure.lang.ExceptionInfo (p/note :h4))))
+
+(deftest scales-chords-and-degrees
+  (is (= [57 59 60 62 64 65 67] (p/scale :a3 :minor)))
+  (is (= [59 60 72 74 48] (map #(p/degree (p/scale :c4 :major) %) [-1 0 7 8 -7])))
+  (is (= [57 60 64] (p/chord :a3 :minor)))
+  (is (thrown? clojure.lang.ExceptionInfo (p/scale :c4 :klingon))))
+
+(deftest markov-walks-stay-in-scale-and-repeat-per-seed
+  (let [sc (p/scale :a3 :minor-pentatonic)
+        walk (p/markov-walk {:seed 7 :len 32 :scale sc})
+        in-scale? (set (for [o (range -3 4) n sc] (+ n (* 12 o))))]
+    (is (= 32 (count walk)))
+    (is (= (first sc) (first walk)) "starts on the start degree")
+    (is (every? in-scale? walk))
+    (is (= walk (p/markov-walk {:seed 7 :len 32 :scale sc})))
+    (is (not= walk (p/markov-walk {:seed 8 :len 32 :scale sc})))))
+
+(deftest rhythm-fills-one-bar
+  (is (= [{:t 0 :len 4 :pitch 57 :vel 0.8}
+          {:t 4 :len 2 :pitch 60 :vel 0.8}
+          {:t 8 :len 8 :pitch 64 :vel 0.8}]
+         (p/rhythm [1/4 1/8 1/8 1/2] [:a3 :c4 nil :e4])))
+  (is (= 16 (count (p/rhythm [1/16] [60]))) "cycles until the bar is full")
+  (is (= [] (p/rhythm [] [60]) (p/rhythm [1/4] []))))
+
+(deftest notes-are-normalized
+  (is (= [{:t 3 :len 1 :pitch 64 :vel 1.0}]
+         (p/notes [{:t 3 :pitch :c4} {:t 3 :pitch 64 :vel 2} {:t 20 :pitch 1} {:pitch 60}])))
+  (is (p/notes? [{:t 0 :pitch 60}]))
+  (is (not (p/notes? [1 0 1 0])))
+  (is (not (p/notes? []))))

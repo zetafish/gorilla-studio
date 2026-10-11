@@ -6,15 +6,39 @@
 (def Steps
   [:vector {:min proto/pattern-steps :max proto/pattern-steps} [:enum 0 1]])
 
+(def Note
+  "Times in steps (sixteenths): :t within the bar, :len may run past it."
+  [:map {:closed true}
+   [:t [:int {:min 0 :max (dec proto/pattern-steps)}]]
+   [:len [:int {:min 1 :max 64}]]
+   [:pitch [:int {:min 0 :max 127}]]
+   [:vel [:and number? [:>= 0] [:<= 1]]]])
+
+(def Notes [:vector {:max proto/pattern-steps} Note])
+
+(defn- one-kind-per-row?
+  "A row holds steps or notes, not both."
+  [{:keys [steps notes]}]
+  (not-any? #(contains? notes %) (keys steps)))
+
 (def Pattern
-  [:map
-   [:steps {:optional true} [:map-of :keyword Steps]]])
+  [:and
+   [:map
+    [:steps {:optional true} [:map-of :keyword Steps]]
+    [:notes {:optional true} [:map-of :keyword Notes]]]
+   [:fn {:error/message "a row holds steps or notes, not both"} one-kind-per-row?]])
+
+(defn rows
+  "Every row of a pattern: [row-id {:steps s}] or [row-id {:notes n}]."
+  [{:keys [steps notes]}]
+  (concat (map (fn [[r s]] [r {:steps s}]) steps)
+          (map (fn [[r n]] [r {:notes n}]) notes)))
 
 (def Generator
   "What a channel plays: a built-in drum, or a sample file. Relative sample
   paths are resolved against `gorilla.engine/samples-root`."
   [:or
-   [:tuple [:= :builtin] [:map [:voice [:enum :kick :snare :hat]]]]
+   [:tuple [:= :builtin] [:map [:voice [:enum :kick :snare :hat :bass :lead]]]]
    [:tuple [:= :sampler] [:map [:sample [:string {:min 1}]]]]])
 
 (def Channel
@@ -24,7 +48,7 @@
   "A row plays the channel with the same id, so every row needs one."
   [{:keys [patterns channels]}]
   (every? #(contains? channels %)
-          (mapcat (comp keys :steps val) patterns)))
+          (mapcat (comp #(map first (rows %)) val) patterns)))
 
 (def Song
   [:and
