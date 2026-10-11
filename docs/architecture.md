@@ -170,6 +170,8 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
 - Desktop: HumbleUI (Skia). Web: re-frame in Tauri or the browser. The UI reads the song atom and dispatches commands; it is never the source of truth.
 - Piano roll, playlist and step sequencer are custom-drawn canvases.
 - **Desktop UI as built** (`gorilla.ui`): `ui.model` turns the song into view data and turns a click position into a command (pure `.cljc`, unit-tested). `ui.app` draws that with HumbleUI. HumbleUI signals mirror the song atom and live patterns, so components re-render when they change; the playhead changes 60 times a second, so canvases read it while painting and a watch only requests a frame. UI-only state (selected pattern, open picker, status line) lives in one signal and never in the song or undo history.
+- **Web UI** (`web/`, ClojureScript with re-frame): the same screens in HTML, as a client of the brain. `gorilla.server` (http-kit, loopback only) serves the built UI and a WebSocket: it pushes the song, live rows and song list when they change and the playhead about 30 times a second, and takes commands (through `dispatch!`, so validated and undoable) and a fixed set of actions (play, undo, save, open, ...). Messages are EDN, read with `clojure.edn`. WebSockets from unknown web origins are refused, so a page open in a browser can't drive the brain. The web UI compiles `gorilla.ui.model` from `brain/src`, so both UIs turn a click into the same command.
+- **Tauri app** (`desktop/`): a Tauri 2 shell showing the built web UI in a native window. It needs no Tauri APIs; its content security policy only allows the brain's WebSocket. It has its own Cargo workspace, apart from the engine's real-time rules.
 - **Testing the UI:** `gorilla.ui.snapshot` mounts components without a window, draws them into a Skia raster surface (and PNG), and delivers mouse events to the tree, so clicks are tested end to end without a display.
 - Waveforms, meters and playhead come from engine telemetry and are never stored in the song.
 
@@ -190,7 +192,7 @@ Clojure isn't real-time, so the brain never schedules notes. It computes ahead a
 | Target | Brain | Engine |
 |---|---|---|
 | Desktop | JVM or GraalVM native image | Native process, full plugin hosting |
-| Web | ClojureScript sharing `.cljc` model, commands, differ, patterns | WASM in an AudioWorklet; no third-party plugins |
+| Web | ClojureScript sharing `.cljc` model, commands, differ, patterns. Today the web UI is a client of a JVM brain instead | WASM in an AudioWorklet; no third-party plugins |
 | Offline export | Sends a song snapshot | Same engine, faster than real time, bit-identical with playback |
 | Headless / agent | No UI; nREPL or MCP | Same as desktop |
 

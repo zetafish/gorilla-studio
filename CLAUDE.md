@@ -37,7 +37,8 @@ A pattern-based DAW: a Clojure **brain** (song model, commands, undo, UI, live c
 
 ## Tooling
 - Clojure: evaluate through nREPL with `clj-nrepl-eval`; use `:reload` when requiring changed namespaces. Fix unbalanced delimiters with `clj-paren-repair`, never by hand.
-- Rust: `cargo fmt`, `cargo clippy -- -D warnings` and `cargo test` must pass before every commit.
+- Rust: `cargo fmt`, `cargo clippy -- -D warnings` and `cargo test` must pass before every commit (in `engine/`, and in `desktop/src-tauri/` when it changes).
+- Web UI: `cd web && npm run build` (shadow-cljs) must compile with no warnings when `web/` or the shared `.cljc` it uses changes.
 - Commits: one logical change each, only from green states.
 
 ## Version control: jj on top of git

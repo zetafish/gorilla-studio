@@ -99,6 +99,8 @@ Prove the two-process design end to end.
 - **Shortcuts:** space play/stop, ⌘Z undo, ⇧⌘Z redo, ⌘S save. Save writes to the current folder or `brain/songs/untitled-N`; Open lists folders in `brain/songs/`.
 - Everything goes through `dispatch!`, so every action can be undone. What to show and what a click means live in `gorilla.ui.model` (pure, tested); the UI is also tested off-screen by drawing into a Skia surface and sending it mouse events.
 
+- **Alternative UI:** the same screens as a web UI (`web/`, ClojureScript with re-frame) in a Tauri app (`desktop/`) or a browser, talking to the brain over a loopback WebSocket (`clojure -M:serve`). Both UIs share `gorilla.ui.model` and `gorilla.ui.actions`.
+
 **Done when:** a beat can be built and arranged without the REPL, and every UI action can be undone.
 
 ## Next
@@ -160,5 +162,8 @@ Things that work but aren't finished, with the milestone that should close each 
 | The UI edits steps and notes per step, but has no piano roll (pitch, length) or drag to resize clips | Notes keep the pitch of the last note; clip length is fixed at click time | UI follow-up |
 | No native file dialogs (HumbleUI has none) | Save and Open work with `brain/songs/`; other folders need the REPL | UI follow-up |
 | HumbleUI is alpha and pinned to a commit | Updating it may need code changes | Any |
+| The Tauri app doesn't start the brain; run `clojure -M:serve` first | Two steps to start; a sidecar could launch the brain (and the engine) | Packaging |
+| The web UI has no tests of its own; it relies on the shared model's tests and the server's | A broken view only shows when you open it | UI follow-up |
+| The WebSocket has no authentication, only loopback and an Origin check | Any local process can drive the brain, as it already can through nREPL | 9 |
 | `msgpack-core` needs `--sun-misc-unsafe-memory-access=allow` on JDK 24+ | A future JDK may remove the API; a small built-in encoder would drop the dependency | Any |
 | One brain connection at a time, with no authentication | Must stay on loopback; agents go through the brain (MCP), not the socket | 9 |

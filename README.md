@@ -23,6 +23,14 @@ cd brain && clojure -M:ui
 
 Click steps in the channel rack, add channels with "+ Channel", click bars in the playlist to arrange; space plays and stops, ⌘Z undoes. `(gorilla.ui.app/show!)` opens the same window from a REPL.
 
+Or the web UI, as a Tauri app or in a browser. It's a client of the brain, which serves it over a local WebSocket:
+
+```sh
+cd brain && clojure -M:serve            # brain + engine + nREPL; web UI at http://127.0.0.1:7880
+cd web && npm install && npm run build  # once, and after changing the web UI
+cd desktop && npm install && npx tauri dev   # the Tauri app (or open the URL above in a browser)
+```
+
 Or just the REPL (`:nrepl` adds `dev/` with the helpers in `dev/user.clj`; CIDER picks it up from `brain/.dir-locals.el`):
 
 ```sh
