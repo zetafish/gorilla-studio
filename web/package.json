@@ -1,0 +1,17 @@
+{
+  "name": "gorilla-studio-web",
+  "private": true,
+  "description": "Gorilla Studio web UI: a client of the brain's WebSocket, also used by the Tauri app.",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "dev": "shadow-cljs watch app",
+    "build": "shadow-cljs release app"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "shadow-cljs": "3.5.5"
+  }
+}

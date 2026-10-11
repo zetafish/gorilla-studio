@@ -43,3 +43,6 @@ flycheck_*
 # allow-list once they exist; jj snapshots every file, so keep big binaries out.
 /renders/
 *.tmp.wav
+
+# Web UI build output
+/web/public/js/
