@@ -147,8 +147,9 @@
   "The engine refused an envelope and applied none of it. If it held song
   changes, the brain no longer knows what the engine has: resend everything."
   [{:keys [song]} {:keys [ops reason epoch] :as msg}]
-  (reset! last-rejection msg)
   (log "the engine rejected epoch" epoch (pr-str ops) "-" reason)
+  ;; Act first, then publish the rejection, so anyone waiting on it sees the
+  ;; brain already caught up.
   (let [ops (set ops)]
     (cond
       (contains? ops "song/reset")
@@ -159,7 +160,8 @@
       (some (complement live-ops) ops)
       (do (log "resending the whole song")
           (locking write-lock (swap! synced assoc :song nil))
-          (sync-to! @song)))))
+          (sync-to! @song))))
+  (reset! last-rejection msg))
 
 (defn- start-reader!
   "Reads telemetry until the connection ends, then marks the link lost."
