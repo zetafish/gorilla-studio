@@ -18,8 +18,8 @@ use std::time::Duration;
 use gorilla_proto::{Envelope, HEADER_BYTES, Patch, Telemetry};
 use rtrb::Producer;
 
-use crate::graph::Steps;
-use crate::model::{GenSpec, Model, steps_from};
+use crate::graph::Hits;
+use crate::model::{GenSpec, Model, hits_from_notes, hits_from_wire_steps};
 use crate::samples::SampleCache;
 use crate::seq::{Playhead, RtMsg};
 
@@ -182,8 +182,8 @@ pub struct Control {
 
 /// An op that becomes a message once the final graph layout is known.
 enum Pending<'a> {
-    Steps(&'a str, &'a str, Steps),
-    Bar(&'a str, &'a str, u64, Steps),
+    Hits(&'a str, &'a str, Hits),
+    Bar(&'a str, &'a str, u64, Hits),
     Transport(bool),
     Tempo(f32),
 }
@@ -232,19 +232,42 @@ impl Control {
                     row,
                     steps,
                 } => {
-                    let steps = steps_from(steps);
-                    if next.set_steps(pattern, row, steps) {
+                    let hits = hits_from_wire_steps(steps);
+                    if next.set_hits(pattern, row, hits) {
                         reshaped = true;
                     } else {
-                        pending.push(Pending::Steps(pattern, row, steps));
+                        pending.push(Pending::Hits(pattern, row, hits));
                     }
                 }
+                Patch::SetNotes {
+                    pattern,
+                    row,
+                    notes,
+                } => {
+                    let hits = hits_from_notes(notes)?;
+                    if next.set_hits(pattern, row, hits) {
+                        reshaped = true;
+                    } else {
+                        pending.push(Pending::Hits(pattern, row, hits));
+                    }
+                }
+                Patch::ScheduleNotes {
+                    pattern,
+                    row,
+                    bar,
+                    notes,
+                } => pending.push(Pending::Bar(pattern, row, *bar, hits_from_notes(notes)?)),
                 Patch::ScheduleBar {
                     pattern,
                     row,
                     bar,
                     steps,
-                } => pending.push(Pending::Bar(pattern, row, *bar, steps_from(steps))),
+                } => pending.push(Pending::Bar(
+                    pattern,
+                    row,
+                    *bar,
+                    hits_from_wire_steps(steps),
+                )),
                 Patch::SetTransport { playing } => pending.push(Pending::Transport(*playing)),
                 Patch::RemoveRow { pattern, row } => reshaped |= next.remove_row(pattern, row),
                 Patch::RemovePattern { pattern } => reshaped |= next.remove_pattern(pattern),
@@ -276,21 +299,17 @@ impl Control {
         };
         for p in pending {
             msgs.push(match p {
-                Pending::Steps(pattern, row, steps) => {
+                Pending::Hits(pattern, row, hits) => {
                     let (pattern, row) = row_index(pattern, row)?;
-                    RtMsg::SetSteps {
-                        pattern,
-                        row,
-                        steps,
-                    }
+                    RtMsg::SetHits { pattern, row, hits }
                 }
-                Pending::Bar(pattern, row, bar, steps) => {
+                Pending::Bar(pattern, row, bar, hits) => {
                     let (pattern, row) = row_index(pattern, row)?;
                     RtMsg::ScheduleBar {
                         pattern,
                         row,
                         bar,
-                        steps,
+                        hits,
                     }
                 }
                 Pending::Transport(playing) => RtMsg::Transport { playing },
@@ -366,10 +385,10 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    const ALL_HATS: RtMsg = RtMsg::SetSteps {
+    const ALL_HATS: RtMsg = RtMsg::SetHits {
         pattern: 0,
         row: 2,
-        steps: [true; PATTERN_STEPS],
+        hits: [Some(crate::graph::STEP_HIT); PATTERN_STEPS],
     };
 
     #[test]
@@ -518,7 +537,7 @@ mod tests {
                 pattern: 0,
                 row: 0,
                 bar: 12,
-                steps: [false; PATTERN_STEPS]
+                hits: [None; PATTERN_STEPS]
             })
         );
     }
@@ -547,7 +566,7 @@ mod tests {
         }
         assert!(matches!(
             rx.pop(),
-            Ok(RtMsg::SetSteps {
+            Ok(RtMsg::SetHits {
                 pattern: 0,
                 row: 0,
                 ..
@@ -631,6 +650,56 @@ mod tests {
         assert!(apply(&mut control, &remove).is_ok());
         assert!(matches!(rx.pop(), Ok(RtMsg::SwapGraph(g)) if g.channels.len() == 2));
         assert!(apply(&mut control, &set_steps("drums", "hat", 2)).is_err());
+    }
+
+    #[test]
+    fn notes_set_and_schedule_rows() {
+        let (mut control, mut rx) = control(8);
+        let note = |t, pitch| gorilla_proto::Note {
+            t,
+            len: 2,
+            pitch,
+            vel: 0.5,
+        };
+        let ops = envelope(vec![
+            Patch::SetChannel {
+                channel: "bass".into(),
+                generator: Gen::Builtin {
+                    voice: "bass".into(),
+                },
+            },
+            Patch::SetNotes {
+                pattern: "low".into(),
+                row: "bass".into(),
+                notes: vec![note(0, 36), note(8, 43)],
+            },
+        ]);
+        assert!(apply(&mut control, &ops).is_ok());
+        let swap = rx.pop();
+        assert!(matches!(&swap, Ok(RtMsg::SwapGraph(g))
+            if g.row(1, 0).is_some_and(|r| r.hits.iter().flatten().count() == 2)));
+        let schedule = envelope(vec![Patch::ScheduleNotes {
+            pattern: "low".into(),
+            row: "bass".into(),
+            bar: 4,
+            notes: vec![note(15, 31)],
+        }]);
+        assert!(apply(&mut control, &schedule).is_ok());
+        assert!(matches!(
+            rx.pop(),
+            Ok(RtMsg::ScheduleBar {
+                pattern: 1,
+                row: 0,
+                bar: 4,
+                ..
+            })
+        ));
+        let bad = envelope(vec![Patch::SetNotes {
+            pattern: "low".into(),
+            row: "bass".into(),
+            notes: vec![note(16, 31)],
+        }]);
+        assert!(apply(&mut control, &bad).is_err());
     }
 
     #[test]

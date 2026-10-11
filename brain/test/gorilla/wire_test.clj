@@ -45,7 +45,7 @@
                       (if (pos? (.available in))
                         (recur (conj acc (wire/read-frame in)))
                         acc))]
-      (is (= 10 (count envelopes)))
+      (is (= 12 (count envelopes)))
       (doseq [e envelopes
               :let [e (brain-shaped e)]]
         (is (m/validate proto/Envelope e)

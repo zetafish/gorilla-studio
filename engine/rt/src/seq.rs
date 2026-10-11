@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rtrb::{Producer, PushError};
 
-use crate::graph::{Graph, STEPS, Steps};
+use crate::graph::{Graph, Hits, STEPS};
 use crate::voice::{Ctx, Noise};
 
 const MASTER_GAIN: f32 = 0.6;
@@ -18,19 +18,19 @@ const MASTER_GAIN: f32 = 0.6;
 pub enum RtMsg {
     /// Replace the graph. Its carry maps say which voices and rows continue.
     SwapGraph(Box<Graph>),
-    SetSteps {
+    SetHits {
         pattern: usize,
         row: usize,
-        steps: Steps,
+        hits: Hits,
     },
-    /// Play `steps` on a row from the start of `bar` (counted from the last
+    /// Play `hits` on a row from the start of `bar` (counted from the last
     /// start). The row keeps them afterwards, so if nothing else is queued the
     /// last bar keeps looping.
     ScheduleBar {
         pattern: usize,
         row: usize,
         bar: u64,
-        steps: Steps,
+        hits: Hits,
     },
     /// Start (from step 0) or stop the clock. Starting while playing does nothing.
     Transport { playing: bool },
@@ -120,25 +120,21 @@ impl Sequencer {
                     std::mem::forget(old);
                 }
             }
-            RtMsg::SetSteps {
-                pattern,
-                row,
-                steps,
-            } => {
+            RtMsg::SetHits { pattern, row, hits } => {
                 if let Some(row) = self.graph.row_mut(pattern, row) {
-                    row.steps = steps;
+                    row.hits = hits;
                 }
             }
             RtMsg::ScheduleBar {
                 pattern,
                 row,
                 bar,
-                steps,
+                hits,
             } => {
                 // The first bar that hasn't started yet.
                 let earliest = self.steps_played.div_ceil(STEPS as u64);
                 if let Some(row) = self.graph.row_mut(pattern, row) {
-                    row.queue.insert(bar, steps, earliest);
+                    row.queue.insert(bar, hits, earliest);
                 }
             }
             RtMsg::Transport { playing } => self.set_playing(playing),
@@ -204,6 +200,7 @@ mod tests {
     use rtrb::{Consumer, RingBuffer};
 
     use super::*;
+    use crate::graph::{Hit, Steps, hits_from_steps, steps_of};
     use crate::model::{DEFAULT_HAT, Model};
     use crate::samples::SampleCache;
 
@@ -249,10 +246,10 @@ mod tests {
 
     fn set_all(seq: &mut Sequencer, steps: Steps) {
         for row in 0..3 {
-            seq.apply(RtMsg::SetSteps {
+            seq.apply(RtMsg::SetHits {
                 pattern: 0,
                 row,
-                steps,
+                hits: hits_from_steps(&steps),
             });
         }
     }
@@ -260,7 +257,7 @@ mod tests {
     fn hats(seq: &Sequencer) -> Steps {
         seq.graph
             .row(HAT.0, HAT.1)
-            .map(|r| r.steps)
+            .map(|r| steps_of(&r.hits))
             .unwrap_or_default()
     }
 
@@ -269,7 +266,7 @@ mod tests {
             pattern: HAT.0,
             row: HAT.1,
             bar,
-            steps,
+            hits: hits_from_steps(&steps),
         });
     }
 
@@ -298,10 +295,10 @@ mod tests {
         if let Some(s) = hat_on_one.get_mut(1) {
             *s = true;
         }
-        seq.apply(RtMsg::SetSteps {
+        seq.apply(RtMsg::SetHits {
             pattern: HAT.0,
             row: HAT.1,
-            steps: hat_on_one,
+            hits: hits_from_steps(&hat_on_one),
         });
         let out = render(&mut seq, 6_100);
         let (first, rest) = out.split_at(6_000);
@@ -435,6 +432,35 @@ mod tests {
     }
 
     #[test]
+    fn notes_hold_for_their_length() {
+        let mut seq = sequencer();
+        set_all(&mut seq, NONE);
+        let mut hits: Hits = [None; STEPS];
+        if let Some(slot) = hits.get_mut(0) {
+            *slot = Some(Hit {
+                pitch: 60,
+                vel: 1.0,
+                len: 3,
+            });
+        }
+        seq.apply(RtMsg::SetHits {
+            pattern: 0,
+            row: 0,
+            hits,
+        });
+        render(&mut seq, 1);
+        assert_eq!(seq.graph.channels.first().map(|c| c.gate), Some(3));
+        render(&mut seq, 2 * 6_000);
+        assert_eq!(seq.graph.channels.first().map(|c| c.gate), Some(1));
+        render(&mut seq, 6_000);
+        assert_eq!(
+            seq.graph.channels.first().map(|c| c.gate),
+            Some(0),
+            "released on step 3"
+        );
+    }
+
+    #[test]
     fn odd_inputs_do_not_break_the_clock() {
         for (sr, bpm) in [
             (0.0, 120.0),
@@ -449,10 +475,10 @@ mod tests {
         }
         let (reclaim, _old) = RingBuffer::new(1);
         let mut empty = Sequencer::new(SR, 120.0, Arc::default(), Box::default(), reclaim);
-        empty.apply(RtMsg::SetSteps {
+        empty.apply(RtMsg::SetHits {
             pattern: 9,
             row: 9,
-            steps: ALL,
+            hits: hits_from_steps(&ALL),
         });
         assert_eq!(peak(&render(&mut empty, 10_000)), 0.0);
     }

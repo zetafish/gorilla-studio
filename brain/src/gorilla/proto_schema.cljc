@@ -11,11 +11,20 @@
    [:builtin
     [:map {:closed true}
      [:type [:= :builtin]]
-     [:voice [:enum :kick :snare :hat]]]]
+     [:voice [:enum :kick :snare :hat :bass :lead]]]]
    [:sampler
     [:map {:closed true}
      [:type [:= :sampler]]
      [:sample :string]]]])
+
+(def Note
+  [:map {:closed true}
+   [:t [:int {:min 0 :max 15}]]
+   [:len [:int {:min 1 :max 64}]]
+   [:pitch [:int {:min 0 :max 127}]]
+   [:vel [:double {:min 0.0 :max 1.0}]]])
+
+(def Notes [:vector {:max 16} Note])
 
 (def Patch
   [:multi {:dispatch :op}
@@ -32,6 +41,19 @@
      [:row :keyword]
      [:bar [:int {:min 0}]]
      [:steps [:vector {:min 16 :max 16} [:enum 0 1]]]]]
+   [:pattern/set-notes
+    [:map {:closed true}
+     [:op [:= :pattern/set-notes]]
+     [:pattern :keyword]
+     [:row :keyword]
+     [:notes Notes]]]
+   [:pattern/schedule-notes
+    [:map {:closed true}
+     [:op [:= :pattern/schedule-notes]]
+     [:pattern :keyword]
+     [:row :keyword]
+     [:bar [:int {:min 0}]]
+     [:notes Notes]]]
    [:transport/set
     [:map {:closed true}
      [:op [:= :transport/set]]

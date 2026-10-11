@@ -22,6 +22,12 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// Bytes in the length prefix.
 pub const HEADER_BYTES: usize = 4;
 
+/// Most notes a row's bar can hold: one starting on each step.
+pub const MAX_NOTES: usize = PATTERN_STEPS;
+
+/// Longest note, in steps (four bars).
+pub const MAX_NOTE_LEN: u8 = 64;
+
 /// Tempo range the engine accepts, in beats per minute.
 pub const MIN_BPM: f64 = 20.0;
 pub const MAX_BPM: f64 = 999.0;
@@ -56,6 +62,22 @@ pub enum Patch {
         bar: u64,
         steps: [Step; PATTERN_STEPS],
     },
+    /// Replace one row of a pattern with notes. A row holds either steps or
+    /// notes; both trigger the channel with the row's id.
+    #[serde(rename = "pattern/set-notes")]
+    SetNotes {
+        pattern: String,
+        row: String,
+        notes: Vec<Note>,
+    },
+    /// Like `pattern/schedule-bar`, with notes.
+    #[serde(rename = "pattern/schedule-notes")]
+    ScheduleNotes {
+        pattern: String,
+        row: String,
+        bar: u64,
+        notes: Vec<Note>,
+    },
     /// Start or stop playback. Transport is engine state, not song data: it
     /// isn't saved or undone, and it doesn't advance the epoch.
     #[serde(rename = "transport/set")]
@@ -89,6 +111,8 @@ impl Patch {
         match self {
             Patch::SetSteps { .. } => "pattern/set-steps",
             Patch::ScheduleBar { .. } => "pattern/schedule-bar",
+            Patch::SetNotes { .. } => "pattern/set-notes",
+            Patch::ScheduleNotes { .. } => "pattern/schedule-notes",
             Patch::SetTransport { .. } => "transport/set",
             Patch::RemoveRow { .. } => "pattern/remove-row",
             Patch::RemovePattern { .. } => "pattern/remove",
@@ -98,6 +122,18 @@ impl Patch {
             Patch::Reset => "song/reset",
         }
     }
+}
+
+/// A note in a bar. Times are in steps (sixteenths): `t` is 0..15, `len` 1
+/// up to `MAX_NOTE_LEN`, so a note can ring into later bars. `pitch` is a
+/// MIDI note number, `vel` 0..1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Note {
+    pub t: u8,
+    pub len: u8,
+    pub pitch: u8,
+    pub vel: f64,
 }
 
 /// What a channel plays.
@@ -205,6 +241,35 @@ pub fn examples() -> Vec<Envelope> {
             bar: 12,
             steps,
         },
+        Patch::SetNotes {
+            pattern: "bass".into(),
+            row: "bass".into(),
+            notes: vec![Note {
+                t: 0,
+                len: 4,
+                pitch: 36,
+                vel: 0.9,
+            }],
+        },
+        Patch::ScheduleNotes {
+            pattern: "lead".into(),
+            row: "lead".into(),
+            bar: 3,
+            notes: vec![
+                Note {
+                    t: 2,
+                    len: 1,
+                    pitch: 72,
+                    vel: 0.5,
+                },
+                Note {
+                    t: 15,
+                    len: 64,
+                    pitch: 127,
+                    vel: 1.0,
+                },
+            ],
+        },
         Patch::SetTransport { playing: false },
         Patch::RemoveRow {
             pattern: "drums".into(),
@@ -306,11 +371,20 @@ pub fn malli_schema() -> String {
    [:builtin
     [:map {{:closed true}}
      [:type [:= :builtin]]
-     [:voice [:enum :kick :snare :hat]]]]
+     [:voice [:enum :kick :snare :hat :bass :lead]]]]
    [:sampler
     [:map {{:closed true}}
      [:type [:= :sampler]]
      [:sample :string]]]])
+
+(def Note
+  [:map {{:closed true}}
+   [:t [:int {{:min 0 :max {last_step}}}]]
+   [:len [:int {{:min 1 :max {MAX_NOTE_LEN}}}]]
+   [:pitch [:int {{:min 0 :max 127}}]]
+   [:vel [:double {{:min 0.0 :max 1.0}}]]])
+
+(def Notes [:vector {{:max {MAX_NOTES}}} Note])
 
 (def Patch
   [:multi {{:dispatch :op}}
@@ -327,6 +401,19 @@ pub fn malli_schema() -> String {
      [:row :keyword]
      [:bar [:int {{:min 0}}]]
      [:steps [:vector {{:min {PATTERN_STEPS} :max {PATTERN_STEPS}}} [:enum 0 1]]]]]
+   [:pattern/set-notes
+    [:map {{:closed true}}
+     [:op [:= :pattern/set-notes]]
+     [:pattern :keyword]
+     [:row :keyword]
+     [:notes Notes]]]
+   [:pattern/schedule-notes
+    [:map {{:closed true}}
+     [:op [:= :pattern/schedule-notes]]
+     [:pattern :keyword]
+     [:row :keyword]
+     [:bar [:int {{:min 0}}]]
+     [:notes Notes]]]
    [:transport/set
     [:map {{:closed true}}
      [:op [:= :transport/set]]

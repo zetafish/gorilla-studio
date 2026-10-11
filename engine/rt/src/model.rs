@@ -6,7 +6,9 @@
 
 use std::path::PathBuf;
 
-use crate::graph::{BarQueue, Channel, Graph, Pattern, Row, STEPS, Steps};
+use crate::graph::{
+    BarQueue, Channel, Graph, Hit, Hits, Pattern, Row, STEPS, Steps, hits_from_steps,
+};
 use crate::samples::SampleCache;
 use crate::voice::{Builtin, Generator, Voice};
 
@@ -36,7 +38,7 @@ pub struct ChannelSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowSpec {
     pub id: String,
-    pub steps: Steps,
+    pub hits: Hits,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +82,7 @@ impl Model {
                     .iter()
                     .map(|(id, _, steps)| RowSpec {
                         id: (*id).into(),
-                        steps: *steps,
+                        hits: hits_from_steps(steps),
                     })
                     .collect(),
             }],
@@ -102,9 +104,9 @@ impl Model {
         Some((p, r))
     }
 
-    /// Sets a row's steps, creating the pattern and row if needed. Returns
+    /// Sets a row's bar, creating the pattern and row if needed. Returns
     /// true when that changed the model's shape.
-    pub fn set_steps(&mut self, pattern: &str, row: &str, steps: Steps) -> bool {
+    pub fn set_hits(&mut self, pattern: &str, row: &str, hits: Hits) -> bool {
         let p = match self.patterns.iter().position(|p| p.id == pattern) {
             Some(p) => p,
             None => {
@@ -120,13 +122,13 @@ impl Model {
         };
         match spec.rows.iter_mut().find(|r| r.id == row) {
             Some(existing) => {
-                existing.steps = steps;
+                existing.hits = hits;
                 false
             }
             None => {
                 spec.rows.push(RowSpec {
                     id: row.into(),
-                    steps,
+                    hits,
                 });
                 true
             }
@@ -201,6 +203,7 @@ impl Model {
                         }
                     },
                     voice: Voice::default(),
+                    gate: 0,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -228,7 +231,7 @@ impl Model {
                 })?;
                 rows.push(Row {
                     channel,
-                    steps: row.steps,
+                    hits: row.hits,
                     queue: BarQueue::default(),
                 });
                 carries.push(prev.row_index(&pattern.id, &row.id));
@@ -246,9 +249,38 @@ impl Model {
     }
 }
 
-/// Converts wire steps to engine steps.
-pub fn steps_from(wire: &[gorilla_proto::Step; STEPS]) -> Steps {
-    wire.map(|s| s.0)
+/// Converts wire steps to a bar of hits.
+pub fn hits_from_wire_steps(wire: &[gorilla_proto::Step; STEPS]) -> Hits {
+    hits_from_steps(&wire.map(|s| s.0))
+}
+
+/// Converts wire notes to a bar of hits. Two notes on one step: the later
+/// one wins, since a channel plays one note at a time.
+pub fn hits_from_notes(notes: &[gorilla_proto::Note]) -> Result<Hits, String> {
+    if notes.len() > gorilla_proto::MAX_NOTES {
+        return Err(format!("{} notes in one bar", notes.len()));
+    }
+    let mut hits: Hits = [None; STEPS];
+    for note in notes {
+        if note.len == 0 || note.len > gorilla_proto::MAX_NOTE_LEN {
+            return Err(format!("note length {} out of range", note.len));
+        }
+        if note.pitch > 127 {
+            return Err(format!("pitch {} out of range", note.pitch));
+        }
+        if !(0.0..=1.0).contains(&note.vel) {
+            return Err(format!("velocity {} out of range", note.vel));
+        }
+        let slot = hits
+            .get_mut(usize::from(note.t))
+            .ok_or_else(|| format!("note at step {} is outside the bar", note.t))?;
+        *slot = Some(Hit {
+            pitch: note.pitch,
+            vel: note.vel as f32,
+            len: note.len,
+        });
+    }
+    Ok(hits)
 }
 
 #[cfg(test)]
@@ -286,10 +318,44 @@ mod tests {
         );
     }
 
+    fn note(t: u8, len: u8, pitch: u8, vel: f64) -> gorilla_proto::Note {
+        gorilla_proto::Note { t, len, pitch, vel }
+    }
+
+    #[test]
+    fn notes_become_hits_and_bad_notes_are_refused() {
+        let hits = hits_from_notes(&[note(0, 4, 36, 0.5), note(3, 1, 40, 1.0)]);
+        assert!(hits.is_ok());
+        let Ok(hits) = hits else { return };
+        assert_eq!(
+            hits.first().copied().flatten(),
+            Some(Hit {
+                pitch: 36,
+                vel: 0.5,
+                len: 4
+            })
+        );
+        assert_eq!(hits.iter().flatten().count(), 2);
+        for bad in [
+            note(16, 1, 60, 1.0),
+            note(0, 0, 60, 1.0),
+            note(0, 65, 60, 1.0),
+            note(0, 1, 128, 1.0),
+            note(0, 1, 60, 1.5),
+            note(0, 1, 60, f64::NAN),
+        ] {
+            assert!(
+                hits_from_notes(std::slice::from_ref(&bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(hits_from_notes(&vec![note(0, 1, 60, 1.0); 17]).is_err());
+    }
+
     #[test]
     fn rows_need_a_channel() {
         let mut model = Model::default_drums();
-        assert!(model.set_steps("drums", "cowbell", [true; STEPS]));
+        assert!(model.set_hits("drums", "cowbell", hits_from_steps(&[true; STEPS])));
         assert!(
             model
                 .build(&Model::default(), 48_000.0, &mut SampleCache::default())
@@ -302,7 +368,7 @@ mod tests {
         let prev = Model::default_drums();
         let mut next = prev.clone();
         next.channels.reverse();
-        next.set_steps("fills", "hat", [true; STEPS]);
+        next.set_hits("fills", "hat", hits_from_steps(&[true; STEPS]));
         let graph = next.build(&prev, 48_000.0, &mut SampleCache::default());
         assert!(graph.is_ok());
         let Ok(graph) = graph else { return };
