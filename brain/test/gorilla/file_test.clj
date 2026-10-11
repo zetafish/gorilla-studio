@@ -121,18 +121,43 @@
     (spit (io/file dir "song.edn")
           (file/->edn
            {:format 1
-            :song song/default-song
+            :song (-> song/default-song
+                      (assoc-in [:channels :lead :gen] [:builtin {:voice :lead}])
+                      (assoc-in [:patterns :melody :notes :lead] []))
             :live {[:drums :hat] {:source "(fn [bar] (euclid (+ 3 (mod bar 4)) 16))"
                                   :bars [(p/steps "x...")]}
+                   [:melody :lead] {:source "(fn [bar] (rhythm [1/4] (markov-walk {:seed bar :len 4 :scale (scale :a4 :minor)})))"
+                                    :bars [(p/steps "x...")]}
                    [:drums :kick] {:source (str "(fn [bar] (spit " (pr-str (str canary)) " 1) \"x\")")
                                    :bars [(p/steps "x.......")]}
                    [:drums :snare] {:source "(fn [bar] (future 1))" :bars [(p/steps "....x...")]}}}))
     (file/open! dir)
     (is (= (p/steps "x...") ((:f (get @live/patterns [:drums :hat])) 5)) "frozen until activated")
     (let [{:keys [active failed]} (live/activate!)]
-      (is (= [[:drums :hat]] active))
+      (is (= [[:drums :hat] [:melody :lead]] active))
       (is (re-find #"spit" (get failed [:drums :kick])))
       (is (re-find #"future" (get failed [:drums :snare]))))
     (is (= (p/euclid 4 16) ((:f (get @live/patterns [:drums :hat])) 5)) "generating again")
     (is (some? (:frozen (get @live/patterns [:drums :kick]))) "a failed pattern stays frozen")
     (is (not (.exists canary)))))
+
+(deftest undo-after-open-brings-back-patterns-and-samples
+  (let [a (temp-dir)
+        b (temp-dir)]
+    (studio/dispatch! {:cmd :song/replace :song (song-with-samples a)})
+    (live/set-pattern! :drums :hat (constantly "x.x.") "a-hat")
+    (file/save! a)
+    (studio/dispatch! {:cmd :song/replace :song song/default-song})
+    (live/clear!)
+    (live/set-pattern! :drums :kick (constantly "xxxx") "b-kick")
+    (file/save! b)
+
+    (file/open! a)
+    (is (= (str (.getCanonicalFile a)) @engine/samples-root))
+    (file/open! b)
+    (is (= #{[:drums :kick]} (set (keys @live/patterns))))
+    (studio/undo!)
+    (is (= #{[:drums :hat]} (set (keys @live/patterns))) "a's patterns are back")
+    (is (= (str (.getCanonicalFile a)) @engine/samples-root) "and samples resolve in a again")
+    (studio/redo!)
+    (is (= #{[:drums :kick]} (set (keys @live/patterns))))))

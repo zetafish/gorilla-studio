@@ -9,6 +9,7 @@
 (defn- reset-engine-state! []
   (engine/stop-auto-connect!)
   (reset! engine/desired-playing true)
+  (reset! engine/samples-root (System/getProperty "user.dir"))
   (reset! engine/last-rejection nil)
   (reset! @#'engine/epoch 0)
   (reset! @#'engine/synced nil)
@@ -169,6 +170,18 @@
       (let [new-engine (connect-to server song 8 0)]
         (read-patch new-engine)
         (is (= [{:op :transport/set :playing false}] (:ops (read-patch new-engine))))))))
+
+(deftest moving-the-samples-root-reloads-relative-samples
+  (with-open [server (ServerSocket. 0)]
+    (let [song (atom (assoc-in song/default-song [:channels :clap :gen]
+                               [:sampler {:sample "assets/clap.wav"}]))
+          fake (connect-to server song 7 0)
+          _ (read-patch fake)
+          _ (reset! engine/samples-root "/elsewhere")
+          _ (swap! song assoc :song/bpm 100)
+          ops (:ops (read-patch fake))]
+      (is (= "/elsewhere/assets/clap.wav"
+             (get-in (first (filter #(= :channel/set (:op %)) ops)) [:generator :sample]))))))
 
 (deftest relative-samples-resolve-against-the-samples-root
   (with-open [server (ServerSocket. 0)]

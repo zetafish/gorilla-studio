@@ -88,17 +88,25 @@
   (let [f (io/file sample)]
     (.getAbsolutePath (if (.isAbsolute f) f (io/file @samples-root sample)))))
 
-(defn- resolve-samples [op]
-  (if (= :sampler (get-in op [:generator :type]))
-    (update-in op [:generator :sample] sample-path)
-    op))
+(defn- resolve-samples
+  "The song with every sample path absolute, as the engine sees it. Diffing
+  resolved songs means a change of samples-root (opening a song elsewhere)
+  reloads samples even when the relative paths look the same."
+  [song]
+  (reduce-kv (fn [s channel {[kind] :gen}]
+               (if (= :sampler kind)
+                 (update-in s [:channels channel :gen 1 :sample] sample-path)
+                 s))
+             song
+             (:channels song)))
 
 (defn- sync-to!
   "Sends whatever takes the engine from what it holds to `song`."
   [song]
   (locking write-lock
     (when-let [{:keys [engine-id]} @link]
-      (let [ops (mapv resolve-samples (diff/diff (:song @synced) song))]
+      (let [song (resolve-samples song)
+            ops (diff/diff (:song @synced) song)]
         (when (and (seq ops)
                    (send-envelope! {:epoch (swap! epoch inc) :ops ops}))
           (reset! synced {:engine-id engine-id :song song}))))))

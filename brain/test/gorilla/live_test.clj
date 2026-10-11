@@ -10,6 +10,7 @@
 
 (defn- reset-all! []
   (engine/stop-auto-connect!)
+  (reset! @#'live/stuck #{})
   (reset! live/patterns {})
   (reset! @#'live/state {:sent {}})
   (reset! @#'engine/synced nil)
@@ -115,3 +116,29 @@
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"fails on bar 0"
                         (live/set-pattern! :drums :hat (fn [_] (throw (Exception. "boom"))) "src")))
   (is (empty? @live/patterns)))
+
+(deftest loop-start-finds-where-bars-repeat
+  (is (= 0 (live/loop-start [:a :b :a :b])))
+  (is (= 2 (live/loop-start [:x :y :a :b :a :b])) "an intro, then a groove")
+  (is (= 0 (live/loop-start [:a :b :c :d])) "no repeat: loop everything")
+  (is (= 0 (live/loop-start [:a])))
+  (is (= 0 (live/loop-start [:a :b :c :d :e :f :g :g])) "two equal bars at the end aren't a loop"))
+
+(deftest frozen-patterns-play-the-intro-once
+  (live/set-frozen! :drums :hat "src" ["x..." "x.x." "xxxx" "xxxx"] 2)
+  (let [f (:f (get @live/patterns [:drums :hat]))]
+    (is (= ["x..." "x.x." "xxxx" "xxxx" "xxxx" "xxxx"] (map f (range 6))))))
+
+(deftest a-slow-pattern-is-stopped-and-the-rest-keep-going
+  (live/set-pattern! :drums :hat (fn [bar] (when (= bar 3) (Thread/sleep 1000)) "x...") "slow")
+  (live/set-pattern! :drums :kick (constantly "x.x.") "fine")
+  (let [guarded (fn [ps] (into {} (map (fn [[k e]] [k (update e :f #(#'live/guarded k %))])) ps))
+        started (System/currentTimeMillis)
+        {:keys [ops errors]} (live/plan (guarded @live/patterns) {} 2 4)]
+    (is (< (- (System/currentTimeMillis) started) 900) "didn't wait for the slow bar")
+    (is (re-find #"longer than" (get errors [:drums :hat])))
+    (is (= #{[:kick 2] [:kick 3] [:kick 4] [:hat 2]} (set (map (juxt :row :bar) ops))))
+    (testing "stopped until redefined"
+      (is (re-find #"stopped" (get (:errors (live/plan (guarded @live/patterns) {} 5 5)) [:drums :hat])))
+      (live/set-pattern! :drums :hat (constantly "x...") "fixed")
+      (is (empty? (:errors (live/plan (guarded @live/patterns) {} 5 5)))))))

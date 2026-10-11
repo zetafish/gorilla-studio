@@ -28,7 +28,7 @@
 
 (def format-version 1)
 
-(def materialized-bars 16)
+(def materialized-bars 32)
 
 (def ^:private max-file-bytes (* 16 1024 1024))
 
@@ -40,7 +40,8 @@
     [:map-of [:tuple :keyword :keyword]
      [:map {:closed true}
       [:source :string]
-      [:bars [:vector {:min 1 :max 1024} [:or song/Steps song/Notes]]]]]]])
+      [:bars [:vector {:min 1 :max 1024} [:or song/Steps song/Notes]]]
+      [:loop-from {:optional true} [:int {:min 0}]]]]]])
 
 (defonce ^{:doc "Folder of the song last opened or saved."} current (atom nil))
 
@@ -193,13 +194,20 @@
                        (not (.isFile (io/file (let [f (io/file sample)]
                                                 (if (.isAbsolute f) f (io/file dir sample)))))))]
       (println "gorilla.file: missing sample for" channel "-" sample))
+    ;; Undo restores the song, its live patterns and where its samples live.
+    (studio/dispatch! {:cmd :song/replace :song song}
+                      {:before-commit #(reset! engine/samples-root (str dir))})
     (live/clear!)
-    (reset! engine/samples-root (str dir))
-    (studio/dispatch! {:cmd :song/replace :song song})
-    (doseq [[[pattern row] {:keys [source bars]}] live]
-      (live/set-frozen! pattern row source bars))
+    (doseq [[[pattern row] {:keys [source bars loop-from]}] live]
+      (live/set-frozen! pattern row source bars (or loop-from 0)))
     (reset! current (str dir))
     {:dir (str dir)
      :channels (count (:channels song))
      :patterns (count (:patterns song))
      :live (count live)}))
+
+(studio/register-companion!
+ ::samples-root
+ {:phase :before
+  :capture (fn [] @engine/samples-root)
+  :restore (fn [root] (reset! engine/samples-root root))})

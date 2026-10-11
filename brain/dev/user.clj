@@ -93,12 +93,12 @@
 
 (defn new-song!
   "Replaces the song with an empty one (or `song`) and clears live patterns.
-  Undo brings the previous song back, but not its live patterns."
+  Undo brings the previous song and its live patterns back."
   ([] (new-song! gorilla.song/empty-song))
   ([song]
-   (doseq [[pattern row] (keys @live/patterns)]
-     (live/remove-pattern! pattern row))
-   (dispatch! {:cmd :song/replace :song song})))
+   (dispatch! {:cmd :song/replace :song song})
+   (live/clear!)
+   :ok))
 
 (defn save!
   ([] (file/save!))

@@ -15,15 +15,51 @@
   (:require [gorilla.engine :as engine]
             [gorilla.pattern :as p]
             [gorilla.studio :as studio]
-            [sci.core :as sci]))
+            [sci.core :as sci])
+  (:import (java.util.concurrent Callable ExecutionException Executors ThreadFactory
+                                 TimeUnit TimeoutException)))
 
 (def lookahead-bars 2)
 
 (def ^:private tick-ms 50)
 
+(def budget-ms
+  "Longest a pattern may take to render one bar. One that takes longer is
+  stopped for good (until redefined), so it can't hold up the others."
+  100)
+
 (defonce ^{:doc "{[pattern row] {:f fn, :source string, :frozen bars-or-nil}}.
   A frozen pattern replays saved bars instead of running code."}
   patterns (atom {}))
+
+;; --- Running pattern code within a budget -------------------------------------
+
+(defonce ^:private pool
+  (Executors/newCachedThreadPool
+   (reify ThreadFactory
+     (newThread [_ r]
+       (doto (Thread. ^Runnable r "gorilla-live-pattern") (.setDaemon true))))))
+
+;; Patterns that ran over budget; never run again until redefined.
+(defonce ^:private stuck (atom #{}))
+
+(defn- guarded
+  "`f` run on a worker thread with `budget-ms` per call."
+  [k f]
+  (fn [bar]
+    (when (@stuck k)
+      (throw (ex-info "stopped after running over budget; redefine it to retry" {})))
+    (let [fut (.submit pool ^Callable (fn [] (f bar)))]
+      (try
+        (.get fut budget-ms TimeUnit/MILLISECONDS)
+        (catch TimeoutException _
+          ;; Interrupts the thread; pure code that never checks may keep it
+          ;; busy until it finishes.
+          (.cancel fut true)
+          (swap! stuck conj k)
+          (throw (ex-info (str "took longer than " budget-ms " ms on bar " bar) {})))
+        (catch ExecutionException e
+          (throw (or (.getCause e) e)))))))
 
 ;; --- Planning (pure) ----------------------------------------------------------
 
@@ -60,7 +96,9 @@
               k [pattern row bar]
               data (bar-data rendered)]
           (cond
-            error (assoc-in acc [:errors [pattern row]] error)
+            ;; The first error says what went wrong; later ones may only
+            ;; say the pattern was stopped.
+            error (update-in acc [:errors [pattern row]] #(or % error))
             (= data (get sent k)) acc
             :else (-> acc
                       (update :ops conj
@@ -104,7 +142,9 @@
                    {}
                    sent)
             ;; A live row removed from the song has nowhere to play.
-            live (into {} (filter (fn [[[pattern row]]] (row-exists? pattern row)))
+            live (into {}
+                       (comp (filter (fn [[[pattern row]]] (row-exists? pattern row)))
+                             (map (fn [[k entry]] [k (update entry :f #(guarded k %))])))
                        @patterns)
             result (plan live sent (inc bar) (+ bar lookahead-bars))]
         (report-errors! errors (:errors result))
@@ -138,7 +178,8 @@
 (defn- install! [pattern row entry]
   (when-not (row-exists? pattern row)
     (throw (ex-info (str "No row " row " in pattern " pattern) {:pattern pattern :row row})))
-  (let [{:keys [error]} (render-bar (:f entry) 0)]
+  (swap! stuck disj [pattern row])
+  (let [{:keys [error]} (render-bar (guarded [pattern row] (:f entry)) 0)]
     (when error
       (throw (ex-info (str "Pattern fails on bar 0: " error) {:pattern pattern :row row}))))
   (swap! patterns assoc [pattern row] entry)
@@ -152,26 +193,53 @@
   [pattern row f source]
   (install! pattern row {:f f :source source :frozen nil}))
 
-(defn- replay [bars]
-  (fn [bar] (nth bars (mod bar (count bars)))))
+(defn loop-start
+  "Where saved `bars` start repeating: the first bar s, in the first half,
+  such that bars s..end are at least two repeats of one period. 0 when there
+  is none, so all the bars loop. An 8-bar intro followed by a repeating groove
+  gives 8; a couple of equal bars at the very end don't count."
+  [bars]
+  (let [n (count bars)
+        periodic? (fn [s p]
+                    (every? #(= (nth bars %) (nth bars (+ % p))) (range s (- n p))))]
+    (or (first (for [s (range 0 (inc (quot n 2)))
+                     p (range 1 (inc (quot (- n s) 2)))
+                     :when (and (zero? (mod (- n s) p)) (periodic? s p))]
+                 s))
+        0)))
+
+(defn- replay [bars loop-from]
+  (let [n (count bars)
+        period (- n loop-from)]
+    (fn [bar]
+      (if (< bar n)
+        (nth bars bar)
+        (nth bars (+ loop-from (mod (- bar loop-from) period)))))))
 
 (defn set-frozen!
-  "Makes a row live from saved `bars`, looping them. `source` is kept as text
-  and not run; `activate!` runs it."
-  [pattern row source bars]
-  (install! pattern row {:f (replay bars) :source source :frozen (vec bars)}))
+  "Makes a row live from saved `bars`: they play once, then the bars from
+  `loop-from` repeat. `source` is kept as text and not run; `activate!` runs
+  it."
+  ([pattern row source bars] (set-frozen! pattern row source bars 0))
+  ([pattern row source bars loop-from]
+   (let [bars (vec bars)
+         loop-from (if (< -1 loop-from (count bars)) loop-from 0)]
+     (install! pattern row {:f (replay bars loop-from) :source source
+                            :frozen bars :loop-from loop-from}))))
 
 (defn materialize
   "Every live pattern as data: its source and its first `n` bars (a frozen
   pattern keeps the bars it has). For saving."
   [n]
   (into (sorted-map)
-        (map (fn [[k {:keys [f source frozen]}]]
-               [k {:source source
-                   :bars (or frozen
-                             (mapv #(or (bar-data (render-bar f %))
-                                        (p/steps []))
-                                   (range n)))}]))
+        (map (fn [[k {:keys [f source frozen loop-from]}]]
+               (let [bars (or frozen
+                              (mapv #(or (bar-data (render-bar (guarded k f) %))
+                                         (p/steps []))
+                                    (range n)))]
+                 [k {:source source
+                     :bars bars
+                     :loop-from (if frozen (or loop-from 0) (loop-start bars))}])))
         @patterns))
 
 (defmacro defpattern
@@ -187,7 +255,7 @@
    (locking tick-lock
      (swap! patterns dissoc [pattern row])
      (swap! state update :sent #(into {} (remove (fn [[[p r _] _]] (= [p r] [pattern row]))) %))
-     (when (engine/connected?)
+     (when (and (engine/connected?) (row-exists? pattern row))
        (let [p (get-in @studio/song [:patterns pattern])]
          (engine/send-live!
           [(if-let [notes (get-in p [:notes row])]
@@ -218,7 +286,9 @@
 (def sandbox-fns
   "What saved pattern source can call, besides pure clojure.core."
   {'steps p/steps 'euclid p/euclid 'rotate p/rotate 'invert p/invert
-   'overlay p/overlay 'mask p/mask 'chance p/chance 'every p/every})
+   'overlay p/overlay 'mask p/mask 'chance p/chance 'every p/every
+   'note p/note 'scale p/scale 'degree p/degree 'chord p/chord
+   'markov-walk p/markov-walk 'rhythm p/rhythm 'transpose p/transpose 'notes p/notes})
 
 (def ^:private denied
   "SCI already leaves out I/O and Java interop; these would let source reach
@@ -252,3 +322,15 @@
                   (assoc-in acc [:failed [pattern row]] (ex-message e))))))
           {:active [] :failed {}}
           (sort-by key @patterns)))
+
+;; Undo of a whole-song replace (new-song!, open!) brings live patterns back.
+(studio/register-companion!
+ ::patterns
+ {:phase :after
+  :capture (fn [] @patterns)
+  :restore (fn [saved]
+             (clear!)
+             (doseq [[[pattern row] entry] saved]
+               (try (install! pattern row entry)
+                    (catch Exception e
+                      (log "not restoring" [pattern row] "-" (ex-message e))))))})

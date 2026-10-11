@@ -100,8 +100,8 @@
   []
   (when-let [errors (song/explain song)]
     (throw (ex-info "songs.dnb/song is invalid" {:errors errors})))
-  (live/clear!)
   (studio/dispatch! {:cmd :song/replace :song song})
+  (live/clear!)
   (live!)
   (if (engine/connected?)
     (live/play!)
